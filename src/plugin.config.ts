@@ -4,7 +4,10 @@ import { createId } from "@paralleldrive/cuid2"
  * Plugin configuration.
  */
 export default {
-    ce_prefix: createId(),
+    /**
+     * Custom element prefix, must be unique
+     */
+    ce_prefix: 'plugin-template',
     identifier: 'org.username.plugin-template',
     name: 'Cider Plugin Template',
     description: 'A template for creating a Cider plugin.',

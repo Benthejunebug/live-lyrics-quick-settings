@@ -20,7 +20,13 @@ export default defineConfig({
         /\.vue\?vue/, // .vue
       ],
     }),
-    vue(),
+    vue({
+      template: {
+        compilerOptions: {
+          isCustomElement: (tag) => tag.startsWith('cider-'),
+        },
+      },
+    }),
     {
       async buildStart(options) {
         console.log('Building plugin...')

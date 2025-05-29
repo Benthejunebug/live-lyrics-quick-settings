@@ -20,7 +20,7 @@ importers:
     devDependencies:
       '@ciderapp/pluginkit':
         specifier: github:ciderapp/pluginkit
-        version: https://codeload.github.com/ciderapp/pluginkit/tar.gz/a9b5296452201259bad4849b877ee0a6acce1b05
+        version: https://codeload.github.com/ciderapp/pluginkit/tar.gz/d4da8ef4bc0cd12d066e9bb88c59031a76b48747
       '@types/lodash':
         specifier: ^4.17.6
         version: 4.17.10
@@ -89,9 +89,9 @@ packages:
     resolution: {integrity: sha512-vwIVdXG+j+FOpkwqHRcBgHLYNL7XMkufrlaFvL9o6Ai9sJn9+PdyIL5qa0XzTZw084c+u9LOls53eoZWP/W5WQ==}
     engines: {node: '>=6.9.0'}
 
-  '@ciderapp/pluginkit@https://codeload.github.com/ciderapp/pluginkit/tar.gz/a9b5296452201259bad4849b877ee0a6acce1b05':
-    resolution: {tarball: https://codeload.github.com/ciderapp/pluginkit/tar.gz/a9b5296452201259bad4849b877ee0a6acce1b05}
-    version: 0.0.4
+  '@ciderapp/pluginkit@https://codeload.github.com/ciderapp/pluginkit/tar.gz/d4da8ef4bc0cd12d066e9bb88c59031a76b48747':
+    resolution: {tarball: https://codeload.github.com/ciderapp/pluginkit/tar.gz/d4da8ef4bc0cd12d066e9bb88c59031a76b48747}
+    version: 0.0.11
 
   '@esbuild/aix-ppc64@0.23.1':
     resolution: {integrity: sha512-6VhYk1diRqrhBAqpJEdjASR/+WVRtfjpqKuNw11cLiaWpAT/Uu+nokB+UJnevzy/P9C/ty6AOe0dwueMrGh/iQ==}
@@ -506,6 +506,10 @@ packages:
 
   '@types/musickit@https://codeload.github.com/ciderapp/musickit-types/tar.gz/86ceb915ea55ce61ebd7bb3e36685a68c908a5df':
     resolution: {tarball: https://codeload.github.com/ciderapp/musickit-types/tar.gz/86ceb915ea55ce61ebd7bb3e36685a68c908a5df}
+    version: 1.0.0
+
+  '@types/musickit@https://codeload.github.com/ciderapp/musickit-types/tar.gz/ee13e00ce4241e61de0712b1b5a103467ddef69d':
+    resolution: {tarball: https://codeload.github.com/ciderapp/musickit-types/tar.gz/ee13e00ce4241e61de0712b1b5a103467ddef69d}
     version: 1.0.0
 
   '@types/node@20.16.10':
@@ -970,9 +974,9 @@ snapshots:
       '@babel/helper-validator-identifier': 7.25.7
       to-fast-properties: 2.0.0
 
-  '@ciderapp/pluginkit@https://codeload.github.com/ciderapp/pluginkit/tar.gz/a9b5296452201259bad4849b877ee0a6acce1b05':
+  '@ciderapp/pluginkit@https://codeload.github.com/ciderapp/pluginkit/tar.gz/d4da8ef4bc0cd12d066e9bb88c59031a76b48747':
     dependencies:
-      '@types/musickit': https://codeload.github.com/ciderapp/musickit-types/tar.gz/86ceb915ea55ce61ebd7bb3e36685a68c908a5df
+      '@types/musickit': https://codeload.github.com/ciderapp/musickit-types/tar.gz/ee13e00ce4241e61de0712b1b5a103467ddef69d
 
   '@esbuild/aix-ppc64@0.23.1':
     optional: true
@@ -1202,6 +1206,8 @@ snapshots:
   '@types/lodash@4.17.10': {}
 
   '@types/musickit@https://codeload.github.com/ciderapp/musickit-types/tar.gz/86ceb915ea55ce61ebd7bb3e36685a68c908a5df': {}
+
+  '@types/musickit@https://codeload.github.com/ciderapp/musickit-types/tar.gz/ee13e00ce4241e61de0712b1b5a103467ddef69d': {}
 
   '@types/node@20.16.10':
     dependencies:

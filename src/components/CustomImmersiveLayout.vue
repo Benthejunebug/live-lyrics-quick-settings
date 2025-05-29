@@ -13,16 +13,23 @@ const showRightSide = ref(true);
       }"
     >
       <div class="left-side">
-        <div class="artwork" @click="showRightSide = !showRightSide">
-          <CComponent name="ImmersiveArtwork"></CComponent>
+        <div
+          class="artwork"
+          @click="showRightSide = !showRightSide"
+        >
+          <cider-immersive-artwork />
         </div>
       </div>
       <div class="right-side">
+        <!-- 
+          This component actually ends up working better using <CComponent>
+          because it's container setup holds elements better for this purpose.
+        -->
         <CComponent name="ImmersiveDrawerContent"></CComponent>
       </div>
     </div>
     <div>
-      <CComponent name="MojavePlayer"></CComponent>
+      <cider-mojave-player />
     </div>
   </div>
 </template>
@@ -33,6 +40,7 @@ const showRightSide = ref(true);
   grid-template-rows: 1fr auto;
   height: 100%;
 }
+
 .main-content {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -48,9 +56,9 @@ const showRightSide = ref(true);
     grid-template-areas: "left-side";
 
     .right-side {
-        opacity: 0;
-        transform: scale(0.9);
-        padding:0;
+      opacity: 0;
+      transform: scale(0.9);
+      padding: 0;
     }
   }
 }
@@ -74,7 +82,7 @@ const showRightSide = ref(true);
   overflow: hidden;
   box-shadow: var(--mediaItemShadow-Shadow);
   cursor: pointer;
-    transition: transform 0.3s var(--ease_appleSpring);
+  transition: transform 0.3s var(--ease_appleSpring);
 
   &:active {
     transform: scale(0.95);

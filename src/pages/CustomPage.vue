@@ -1,24 +1,34 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import HelloWorld from "../components/HelloWorld.vue";
-import CComponent from "@ciderapp/pluginkit/vue/CComponent.vue";
 import { useCider } from "@ciderapp/pluginkit";
+import { DialogAPI } from "@ciderapp/pluginkit";
+
+
+const openComponentDialog = () => {
+  DialogAPI.createDialog({
+    component: 'plugin-template-component-based-modal',
+  }).show();
+};
 
 const cfg = computed(() => {
   return useCider().config.getRef();
 });
+
 </script>
 
 <template>
   <div class="q-pa-lg plugin-base">
-    <h1 class="apple-heading">My Custom Page</h1>
-
-    <CComponent name="MojavePlayer"></CComponent>
-
+    <h1 class="apple-heading">My Custom Plugin Page</h1>
     {{ cfg.general.displayName }}
 
     <p>This is a custom page. You can add your own content here.</p>
     <HelloWorld></HelloWorld>
+
+    <button
+      class="c-btn"
+      @click="openComponentDialog"
+    >Show component based modal</button>
   </div>
 </template>
 

@@ -7,7 +7,7 @@ import { ref, computed } from 'vue'
 // the first argument is a unique id of the store across your application
 export const useMainStore = defineStore('main-store', () => {
 
-  const count = ref(0);
+  const count = ref(1);
 
   const doubled = computed(() => count.value * 2);
 
