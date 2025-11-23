@@ -1,33 +1,26 @@
-# Cider + Vue 3 + TypeScript + Vite
+# Live Lyrics Quick Settings
 
-**(Requires Cider 2.5 or later)**
+A Cider Music Player plugin that adds a "Quick Settings" button to the top-right of the application's chrome. This button opens a bubble menu with a slider to adjust the lyrics offset in real-time, allowing you to fine-tune lyric synchronization.
 
-This is a template/boilerplate for creating Cider plugins using Vue 3, TypeScript, and Vite.
+## Features
 
-## Starting a new plugin project
-Using **Node**
-```bash
-npx giget github:ciderapp/plugin-template your-plugin-name
-```
-Using **Bun**
-```bash
-bunx giget github:ciderapp/plugin-template your-plugin-name
-```
+- **Real-time Lyrics Offset**: Adjust the lyrics offset from -10s to +10s directly from the top bar.
+- **Scroll to Adjust**: Hold `Alt` (default) and scroll on the lyrics view to adjust the offset.
 
-## Available Commands
-- `npm run dev` - Start development server, Cider can then listen to this server when you select "Enable Vite" from the main menu
-- `npm run build` - Build the plugin to `dist/{plugin.config.ts:identifier}`
-- `npm run prepare-marketplace` - Prepare a ZIP package in the correct format for the Cider Marketplace
+## Installation
 
-## How to install after build
-- Copy `dist/{plugin.config.ts:identifier}` to the `/plugins` directory of your Cider app data directory
-    - On Windows, this is `%APPDATA%\C2Windows\plugins`
-    - On macOS, this is `~/Library/Application Support/sh.cider.electron/plugins`
-    - On Linux, this is `~/.config/sh.cider.electron/plugins`
+1. Build the plugin:
+   ```bash
+   npm run build
+   ```
+2. Copy the generated file from `dist/` to your Cider plugins directory.
+   - Windows: `%APPDATA%\C2Windows\plugins`
+   - macOS: `~/Library/Application Support/sh.cider.electron/plugins`
+   - Linux: `~/.config/sh.cider.electron/plugins`
 
-## Preparing a ZIP package for the Cider Marketplace
-Run `npm run prepare-marketplace`
+## Configuration
 
-Running this script will create a ZIP file in the `publish` directory that is ready to be uploaded to the Cider Marketplace.
-
-To configure this plugin edit `src/plugin.config.ts`
+You can configure the "Scroll to Adjust" feature in the plugin settings:
+- **Enabled**: Toggle the feature on/off.
+- **Modifier Key**: Choose between Alt, Control, Meta, or Shift.
+- **Sensitivity**: Adjust how fast the offset changes when scrolling.

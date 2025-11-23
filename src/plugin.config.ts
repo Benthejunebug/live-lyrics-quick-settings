@@ -5,13 +5,13 @@ export default {
     /**
      * Custom element prefix, must be unique
      */
-    ce_prefix: 'plugin-template',
-    identifier: 'org.username.plugin-template',
-    name: 'Cider Plugin Template',
-    description: 'A template for creating a Cider plugin.',
+    ce_prefix: 'live-lyrics-quick-settings',
+    identifier: 'com.antigravity.live-lyrics-quick-settings',
+    name: 'Live Lyrics Quick Settings',
+    description: 'Quickly adjust lyrics offset from the top bar.',
     version: '0.0.1',
-    author: 'your_username',
-    repo: 'https://github.com/ciderapp/plugin-template',
+    author: 'antigravity',
+    repo: 'https://github.com/antigravity/live-lyrics-quick-settings',
     entry: {
         'plugin.js': {
             type: 'main',

@@ -16,7 +16,7 @@ import { execSync } from 'child_process';
     execSync('npm run build');
 
     // The file that will be sent to the marketplace
-    const publishDir = path.resolve(__dirname, '../publish');
+    const publishDir = path.resolve(process.cwd(), 'publish');
     // create a release dir if not exists and remove all files
     if (!fs.existsSync(publishDir)) {
         fs.mkdirSync(publishDir);
@@ -25,8 +25,8 @@ import { execSync } from 'child_process';
         fs.mkdirSync(publishDir);
     }
 
-    const distDir = path.resolve(__dirname, '../dist');
-    const buildContentDir = path.resolve(__dirname, '../dist');
+    const distDir = path.resolve(process.cwd(), 'dist');
+    const buildContentDir = path.resolve(process.cwd(), 'dist');
 
     // make a publish dir
     if (!fs.existsSync(buildContentDir)) {
