@@ -260,14 +260,11 @@ export async function runAutoSync(options: RunAutoSyncOptions = {}): Promise<Aut
     // 3. Get Mic Stream
     let micStream: MediaStream;
     try {
-      // We MUST use echoCancellation: true on some macOS/Electron setups to get ANY audio.
-      // With it false, we get absolute silence (0.0). With it true, we get quiet audio (~0.001 rms).
-      // We will boost this quiet audio later.
       micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: true,
+          echoCancellation: false,
           noiseSuppression: false,
-          autoGainControl: true,
+          autoGainControl: false,
         },
       });
       debugLog.micStreamId = micStream.id;
