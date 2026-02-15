@@ -54,14 +54,14 @@ const { plugin, setupConfig, customElementName, goToPage, useCPlugin } =
 
       // Safety check: If the user is not on Mojave layout, the button won't show.
       // We'll reset it to top-right if it's set to the player controls to ensure visibility.
-      if (cfg.value.buttonLocation === "mojave/player/right") {
-        cfg.value.buttonLocation = "chrome-top/right";
+      if (cfg.value.general.buttonLocation === "mojave/player/right") {
+        cfg.value.general.buttonLocation = "chrome-top/right";
       }
 
       // Here we add a custom button to the chrome
       addCustomButton({
         element: "⏱️",
-        location: cfg.value.buttonLocation,
+        location: cfg.value.general.buttonLocation,
         title: "Lyrics Offset",
         menuElement: customElementName("lyrics-offset-button"),
       });
@@ -79,7 +79,9 @@ const { plugin, setupConfig, customElementName, goToPage, useCPlugin } =
  * Some boilerplate code for our own configuration
  */
 export const cfg = setupConfig({
-  buttonLocation: <"chrome-top/right" | "mojave/player/right">"chrome-top/right",
+  general: {
+    buttonLocation: <"chrome-top/right" | "mojave/player/right">"chrome-top/right",
+  },
   scrollToAdjust: {
     enabled: <boolean>true,
     modifierKey: <"Alt" | "Control" | "Meta" | "Shift">"Alt",
