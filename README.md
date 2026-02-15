@@ -6,7 +6,15 @@ A Cider Music Player plugin that adds a "Quick Settings" button to the top-right
 
 - **Real-time Lyrics Offset**: Adjust the lyrics offset from -10s to +10s directly from the top bar.
 - **Scroll to Adjust**: Hold `Alt` (default) and scroll on the lyrics view to adjust the offset.
-- **Auto Sync (Mic Capture)**: Use the Auto Sync button to listen briefly and estimate the best offset automatically.
+- **Auto Sync**: Click **Auto Sync** to automatically detect the delay between Cider's internal audio and your speakers via the microphone, then apply the offset.
+
+## Auto Sync
+
+The Auto Sync feature captures a short sample from both Cider's audio output and your microphone, then cross-correlates the two to determine the playback delay.
+
+- **Mic permission required** — your browser/app will prompt for microphone access the first time.
+- **Works best with speakers** — the mic needs to hear the same audio that Cider is playing. Headphones won't produce a delay to detect.
+- **Undo** — after auto-sync applies an offset, an Undo link appears for ~10 seconds to revert.
 
 ## Installation
 
@@ -26,7 +34,3 @@ You can configure the "Scroll to Adjust" feature in the plugin settings:
 - **Modifier Key**: Choose between Alt, Control, Meta, or Shift.
 - **Sensitivity**: Adjust how fast the offset changes when scrolling.
 
-## Auto Sync Notes
-
-- Works best with speakers (not headphones) so the microphone can hear playback.
-- Requires microphone permission the first time you use it.

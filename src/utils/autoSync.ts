@@ -1,363 +1,266 @@
-import { useCiderAudio } from "@ciderapp/pluginkit";
-import recorderWorkletSource from "../worklets/pcm-recorder.worklet.ts?raw";
+/**
+ * Auto-Sync utility — captures internal audio + mic, cross-correlates
+ * envelopes, and returns the detected delay as a lyrics offset.
+ */
 
-export type AutoSyncPhase = "listening" | "processing";
-
-export type AutoSyncOptions = {
-  durationMs?: number;
-  maxLagSec?: number;
-  correlationThreshold?: number;
-  frameSize?: number;
-  hopSize?: number;
-  minRms?: number;
-  onPhase?: (phase: AutoSyncPhase) => void;
-};
-
-export type AutoSyncResult = {
-  offsetSeconds: number;
-  correlation: number;
-  debug?: {
-    lagFrames: number;
-    sampleRate: number;
-    rmsStream: number;
-    rmsMic: number;
-  };
-};
-
-const DEFAULTS = {
-  durationMs: 1500,
-  maxLagSec: 2.0,
-  correlationThreshold: 0.2,
-  frameSize: 1024,
-  hopSize: 256,
-  minRms: 0.01,
-  timeoutPaddingMs: 1500,
-};
-
-let workletReady: Promise<void> | null = null;
-let workletObjectUrl: string | null = null;
-
-const clampOffset = (value: number) => {
-  return Math.max(-5, Math.min(15, Math.round(value * 10) / 10));
-};
-
-const waitForAudioReady = async (
-  audio: ReturnType<typeof useCiderAudio>,
-  timeoutMs: number
-) => {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (audio?.context && (audio.source || audio.audioNodes?.gainNode)) {
-      return {
-        context: audio.context,
-        source: (audio.source || audio.audioNodes?.gainNode) as AudioNode,
-      };
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  return null;
-};
-
-const ensureWorklet = async (context: AudioContext) => {
-  if (!context.audioWorklet) {
-    throw new Error("AudioWorklet is not supported in this environment.");
-  }
-  if (!workletObjectUrl) {
-    const blob = new Blob([recorderWorkletSource], {
-      type: "application/javascript",
-    });
-    workletObjectUrl = URL.createObjectURL(blob);
-  }
-  if (!workletReady) {
-    workletReady = context.audioWorklet.addModule(workletObjectUrl);
-  }
-  await workletReady;
-};
-
-const collectSamples = (
-  port: MessagePort,
-  targetSamples: number,
-  timeoutMs: number
-) =>
-  new Promise<Float32Array>((resolve, reject) => {
-    const chunks: Float32Array[] = [];
-    let total = 0;
-    let timeoutId: number | null = null;
-
-    const cleanup = () => {
-      if (timeoutId !== null) {
-        clearTimeout(timeoutId);
+// ---------------------------------------------------------------------------
+// Inline worklet source (bundled as string so we can create a Blob URL)
+// ---------------------------------------------------------------------------
+const WORKLET_SOURCE = /* js */ `
+const BATCH_SIZE = 2048;
+class RecorderProcessor extends AudioWorkletProcessor {
+  constructor() { super(); this.buf = new Float32Array(BATCH_SIZE); this.idx = 0; }
+  process(inputs) {
+    const ch = inputs[0]?.[0];
+    if (!ch) return true;
+    for (let i = 0; i < ch.length; i++) {
+      this.buf[this.idx++] = ch[i];
+      if (this.idx >= BATCH_SIZE) {
+        const c = new Float32Array(this.buf);
+        this.port.postMessage(c, [c.buffer]);
+        this.idx = 0;
       }
-      port.onmessage = null;
-    };
-
-    timeoutId = window.setTimeout(() => {
-      cleanup();
-      reject(new Error("Timed out while recording audio."));
-    }, timeoutMs);
-
-    port.onmessage = (event) => {
-      const data = event.data;
-      if (!data || data.type !== "chunk" || !(data.samples instanceof Float32Array)) {
-        return;
-      }
-      chunks.push(data.samples);
-      total += data.samples.length;
-      if (total >= targetSamples) {
-        cleanup();
-        resolve(concatSamples(chunks, targetSamples));
-      }
-    };
-  });
-
-const concatSamples = (chunks: Float32Array[], targetSamples: number) => {
-  const output = new Float32Array(targetSamples);
-  let offset = 0;
-  for (const chunk of chunks) {
-    const remaining = targetSamples - offset;
-    if (remaining <= 0) {
-      break;
     }
-    const slice = chunk.length > remaining ? chunk.subarray(0, remaining) : chunk;
-    output.set(slice, offset);
-    offset += slice.length;
+    return true;
   }
-  return output;
-};
+}
+registerProcessor('pcm-recorder', RecorderProcessor);
+`;
 
-const computeRms = (samples: Float32Array) => {
-  let sum = 0;
-  for (let i = 0; i < samples.length; i += 1) {
-    const v = samples[i];
-    sum += v * v;
-  }
-  return Math.sqrt(sum / Math.max(1, samples.length));
-};
+let workletRegistered = false;
+let workletBlobUrl: string | null = null;
 
-const computeEnvelope = (samples: Float32Array, frameSize: number, hopSize: number) => {
-  const frameCount = Math.max(1, Math.floor((samples.length - frameSize) / hopSize) + 1);
-  const env = new Float32Array(frameCount);
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+export type AutoSyncStatus = 'listening' | 'processing';
+export type AutoSyncFailReason = 'mic-denied' | 'audio-not-ready' | 'low-signal' | 'no-correlation' | 'worklet-failed';
 
-  for (let frame = 0; frame < frameCount; frame += 1) {
-    const start = frame * hopSize;
-    let sum = 0;
-    for (let i = 0; i < frameSize; i += 1) {
-      const sample = samples[start + i] || 0;
-      sum += sample * sample;
-    }
-    env[frame] = Math.sqrt(sum / frameSize);
-  }
+export interface AutoSyncResult {
+    ok: true;
+    offsetSeconds: number;
+    correlation: number;
+}
 
-  return env;
-};
+export interface AutoSyncError {
+    ok: false;
+    reason: AutoSyncFailReason;
+    message: string;
+}
 
-const normalizeInPlace = (values: Float32Array) => {
-  let mean = 0;
-  for (let i = 0; i < values.length; i += 1) {
-    mean += values[i];
-  }
-  mean /= Math.max(1, values.length);
+// ---------------------------------------------------------------------------
+// Main entry point
+// ---------------------------------------------------------------------------
+export async function runAutoSync(
+    audioContext: AudioContext,
+    sourceNode: AudioNode,
+    durationMs = 1500,
+    onStatus?: (status: AutoSyncStatus) => void,
+): Promise<AutoSyncResult | AutoSyncError> {
 
-  let variance = 0;
-  for (let i = 0; i < values.length; i += 1) {
-    const diff = values[i] - mean;
-    variance += diff * diff;
-  }
-  variance /= Math.max(1, values.length);
-  const std = Math.sqrt(variance) || 1;
-
-  for (let i = 0; i < values.length; i += 1) {
-    values[i] = (values[i] - mean) / std;
-  }
-};
-
-const crossCorrelate = (
-  a: Float32Array,
-  b: Float32Array,
-  maxLag: number
-) => {
-  const len = Math.min(a.length, b.length);
-  const cappedLag = Math.min(maxLag, len - 1);
-  let bestLag = 0;
-  let bestCorr = -Infinity;
-
-  for (let lag = -cappedLag; lag <= cappedLag; lag += 1) {
-    const startA = Math.max(0, -lag);
-    const startB = Math.max(0, lag);
-    const available = Math.min(len - startA, len - startB);
-    if (available <= 0) {
-      continue;
+    // --- Validate inputs -------------------------------------------------------
+    if (!audioContext || audioContext.state === 'closed') {
+        return { ok: false, reason: 'audio-not-ready', message: 'Audio context is not available.' };
     }
 
-    let sum = 0;
-    for (let i = 0; i < available; i += 1) {
-      sum += a[startA + i] * b[startB + i];
+    // Resume context if suspended
+    if (audioContext.state === 'suspended') {
+        await audioContext.resume();
     }
-    const corr = sum / available;
-    if (corr > bestCorr) {
-      bestCorr = corr;
-      bestLag = lag;
+
+    // --- Register worklet ------------------------------------------------------
+    if (!workletRegistered) {
+        try {
+            if (!workletBlobUrl) {
+                const blob = new Blob([WORKLET_SOURCE], { type: 'application/javascript' });
+                workletBlobUrl = URL.createObjectURL(blob);
+            }
+            await audioContext.audioWorklet.addModule(workletBlobUrl);
+            workletRegistered = true;
+        } catch (e) {
+            console.error('[AutoSync] Worklet registration failed:', e);
+            return { ok: false, reason: 'worklet-failed', message: 'AudioWorklet not supported in this environment.' };
+        }
     }
-  }
 
-  return { lag: bestLag, correlation: bestCorr };
-};
-
-export async function runAutoSync(options: AutoSyncOptions = {}): Promise<AutoSyncResult> {
-  const audio = useCiderAudio();
-  if (!audio) {
-    throw new Error("Audio engine not available.");
-  }
-
-  const ready = await waitForAudioReady(audio, 2000);
-  if (!ready) {
-    throw new Error("Audio engine not ready. Start playback and try again.");
-  }
-
-  const { context, source } = ready;
-
-  if (context.state === "suspended") {
+    // --- Request mic -----------------------------------------------------------
+    let micStream: MediaStream;
     try {
-      await context.resume();
+        micStream = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+        });
     } catch {
-      // Ignore resume errors and continue; recording may still work.
+        return { ok: false, reason: 'mic-denied', message: 'Microphone access was denied.' };
     }
-  }
 
-  await ensureWorklet(context);
+    // --- Build recording graph -------------------------------------------------
+    onStatus?.('listening');
 
-  const durationMs = options.durationMs ?? DEFAULTS.durationMs;
-  const maxLagSec = options.maxLagSec ?? DEFAULTS.maxLagSec;
-  const correlationThreshold =
-    options.correlationThreshold ?? DEFAULTS.correlationThreshold;
-  const frameSize = options.frameSize ?? DEFAULTS.frameSize;
-  const hopSize = options.hopSize ?? DEFAULTS.hopSize;
-  const minRms = options.minRms ?? DEFAULTS.minRms;
-  const timeoutMs = durationMs + DEFAULTS.timeoutPaddingMs;
+    const streamSamples: Float32Array[] = [];
+    const micSamples: Float32Array[] = [];
 
-  let micStream: MediaStream | null = null;
-  let micSource: MediaStreamAudioSourceNode | null = null;
-  let streamRecorder: AudioWorkletNode | null = null;
-  let micRecorder: AudioWorkletNode | null = null;
-  let silentGain: GainNode | null = null;
+    const streamRecorder = new AudioWorkletNode(audioContext, 'pcm-recorder');
+    const micRecorder = new AudioWorkletNode(audioContext, 'pcm-recorder');
 
-  if (!navigator.mediaDevices?.getUserMedia) {
-    throw new Error("Microphone access is not supported.");
-  }
-
-  try {
-    micStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
-      },
-    });
-  } catch {
-    throw new Error("Microphone permission was denied.");
-  }
-
-  try {
-    micSource = context.createMediaStreamSource(micStream);
-    silentGain = context.createGain();
+    // Silent gain to keep nodes alive without audible output from the mic
+    const silentGain = audioContext.createGain();
     silentGain.gain.value = 0;
+    silentGain.connect(audioContext.destination);
 
-    streamRecorder = new AudioWorkletNode(context, "pcm-recorder", {
-      numberOfInputs: 1,
-      numberOfOutputs: 1,
-      outputChannelCount: [1],
-    });
-    micRecorder = new AudioWorkletNode(context, "pcm-recorder", {
-      numberOfInputs: 1,
-      numberOfOutputs: 1,
-      outputChannelCount: [1],
-    });
+    const micSource = audioContext.createMediaStreamSource(micStream);
 
-    source.connect(streamRecorder);
-    micSource.connect(micRecorder);
-
+    // Connect stream tap
+    sourceNode.connect(streamRecorder);
     streamRecorder.connect(silentGain);
+
+    // Connect mic
+    micSource.connect(micRecorder);
     micRecorder.connect(silentGain);
-    silentGain.connect(context.destination);
 
-    const targetSamples = Math.ceil((context.sampleRate * durationMs) / 1000);
-
-    options.onPhase?.("listening");
-    const [streamSamples, micSamples] = await Promise.all([
-      collectSamples(streamRecorder.port, targetSamples, timeoutMs),
-      collectSamples(micRecorder.port, targetSamples, timeoutMs),
-    ]);
-
-    options.onPhase?.("processing");
-
-    const rmsStream = computeRms(streamSamples);
-    const rmsMic = computeRms(micSamples);
-    if (rmsStream < minRms || rmsMic < minRms) {
-      throw new Error("Audio signal too quiet. Try again with louder playback.");
-    }
-
-    const envStream = computeEnvelope(streamSamples, frameSize, hopSize);
-    const envMic = computeEnvelope(micSamples, frameSize, hopSize);
-    normalizeInPlace(envStream);
-    normalizeInPlace(envMic);
-
-    const maxLagFrames = Math.round((maxLagSec * context.sampleRate) / hopSize);
-    const { lag, correlation } = crossCorrelate(envStream, envMic, maxLagFrames);
-
-    if (correlation < correlationThreshold) {
-      throw new Error("Could not detect a clear match. Try again.");
-    }
-
-    const offsetSeconds = clampOffset((lag * hopSize) / context.sampleRate);
-
-    return {
-      offsetSeconds,
-      correlation,
-      debug: {
-        lagFrames: lag,
-        sampleRate: context.sampleRate,
-        rmsStream,
-        rmsMic,
-      },
+    // Collect samples
+    streamRecorder.port.onmessage = (e: MessageEvent<Float32Array>) => {
+        streamSamples.push(e.data);
     };
-  } finally {
-    if (source && streamRecorder) {
-      try {
-        source.disconnect(streamRecorder);
-      } catch {
-        // Ignore cleanup errors.
-      }
+    micRecorder.port.onmessage = (e: MessageEvent<Float32Array>) => {
+        micSamples.push(e.data);
+    };
+
+    // Wait for the configured duration
+    await new Promise((resolve) => setTimeout(resolve, durationMs));
+
+    // --- Cleanup ---------------------------------------------------------------
+    try { sourceNode.disconnect(streamRecorder); } catch { /* already disconnected */ }
+    try { streamRecorder.disconnect(); } catch { /* ok */ }
+    try { micRecorder.disconnect(); } catch { /* ok */ }
+    try { micSource.disconnect(); } catch { /* ok */ }
+    try { silentGain.disconnect(); } catch { /* ok */ }
+    micStream.getTracks().forEach((t) => t.stop());
+
+    // --- Process ---------------------------------------------------------------
+    onStatus?.('processing');
+
+    const streamPCM = concatFloat32Arrays(streamSamples);
+    const micPCM = concatFloat32Arrays(micSamples);
+
+    if (streamPCM.length === 0 || micPCM.length === 0) {
+        return { ok: false, reason: 'low-signal', message: 'No audio was captured.' };
     }
-    if (micSource && micRecorder) {
-      try {
-        micSource.disconnect(micRecorder);
-      } catch {
-        // Ignore cleanup errors.
-      }
+
+    // Check RMS levels
+    const streamRms = rms(streamPCM);
+    const micRms = rms(micPCM);
+
+    if (streamRms < 0.001 || micRms < 0.001) {
+        return { ok: false, reason: 'low-signal', message: "Couldn't detect enough audio. Make sure music is playing through speakers." };
     }
-    if (streamRecorder) {
-      try {
-        streamRecorder.disconnect();
-      } catch {
-        // Ignore cleanup errors.
-      }
+
+    // Compute envelopes
+    const sampleRate = audioContext.sampleRate;
+    const frameSize = 1024;
+    const hop = 256;
+    const streamEnv = rmsEnvelope(streamPCM, frameSize, hop);
+    const micEnv = rmsEnvelope(micPCM, frameSize, hop);
+
+    // Normalize envelopes (zero-mean, unit-variance)
+    normalize(streamEnv);
+    normalize(micEnv);
+
+    // Cross-correlate
+    const maxLagSec = 2.0;
+    const maxLagFrames = Math.ceil((maxLagSec * sampleRate) / hop);
+    const { bestLag, bestCorr } = crossCorrelate(streamEnv, micEnv, maxLagFrames);
+
+    if (bestCorr < 0.2) {
+        return { ok: false, reason: 'no-correlation', message: "Couldn't reliably detect the delay. Try with louder playback." };
     }
-    if (micRecorder) {
-      try {
-        micRecorder.disconnect();
-      } catch {
-        // Ignore cleanup errors.
-      }
+
+    // Convert lag to seconds: positive lag means mic is behind stream
+    const offsetSeconds = Math.round(((bestLag * hop) / sampleRate) * 10) / 10;
+
+    // Clamp to slider range
+    const clampedOffset = Math.max(-5, Math.min(15, offsetSeconds));
+
+    return { ok: true, offsetSeconds: clampedOffset, correlation: bestCorr };
+}
+
+// ---------------------------------------------------------------------------
+// DSP helpers
+// ---------------------------------------------------------------------------
+
+function concatFloat32Arrays(arrays: Float32Array[]): Float32Array {
+    let totalLength = 0;
+    for (const a of arrays) totalLength += a.length;
+    const result = new Float32Array(totalLength);
+    let offset = 0;
+    for (const a of arrays) {
+        result.set(a, offset);
+        offset += a.length;
     }
-    if (silentGain) {
-      try {
-        silentGain.disconnect();
-      } catch {
-        // Ignore cleanup errors.
-      }
+    return result;
+}
+
+function rms(data: Float32Array): number {
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+    return Math.sqrt(sum / data.length);
+}
+
+function rmsEnvelope(data: Float32Array, frameSize: number, hop: number): Float32Array {
+    const numFrames = Math.floor((data.length - frameSize) / hop) + 1;
+    if (numFrames <= 0) return new Float32Array(0);
+    const env = new Float32Array(numFrames);
+    for (let f = 0; f < numFrames; f++) {
+        let sum = 0;
+        const start = f * hop;
+        for (let i = start; i < start + frameSize; i++) {
+            sum += data[i] * data[i];
+        }
+        env[f] = Math.sqrt(sum / frameSize);
     }
-    if (micStream) {
-      micStream.getTracks().forEach((track) => track.stop());
+    return env;
+}
+
+function normalize(arr: Float32Array): void {
+    if (arr.length === 0) return;
+    let mean = 0;
+    for (let i = 0; i < arr.length; i++) mean += arr[i];
+    mean /= arr.length;
+    let variance = 0;
+    for (let i = 0; i < arr.length; i++) {
+        arr[i] -= mean;
+        variance += arr[i] * arr[i];
     }
-  }
+    const std = Math.sqrt(variance / arr.length);
+    if (std > 1e-10) {
+        for (let i = 0; i < arr.length; i++) arr[i] /= std;
+    }
+}
+
+function crossCorrelate(
+    a: Float32Array,
+    b: Float32Array,
+    maxLag: number,
+): { bestLag: number; bestCorr: number } {
+    const n = Math.min(a.length, b.length);
+    let bestLag = 0;
+    let bestCorr = -Infinity;
+
+    for (let lag = -maxLag; lag <= maxLag; lag++) {
+        let sum = 0;
+        let count = 0;
+        for (let i = 0; i < n; i++) {
+            const j = i + lag;
+            if (j < 0 || j >= b.length) continue;
+            sum += a[i] * b[j];
+            count++;
+        }
+        if (count === 0) continue;
+        const corr = sum / count;
+        if (corr > bestCorr) {
+            bestCorr = corr;
+            bestLag = lag;
+        }
+    }
+
+    return { bestLag, bestCorr };
 }
