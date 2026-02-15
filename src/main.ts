@@ -11,6 +11,8 @@ import PluginConfig from "./plugin.config";
 
 import LyricsOffsetButton from "./components/LyricsOffsetButton.vue";
 
+const AUDIO_READY_SUBSCRIPTION_KEY = "__llqs_audio_ready_subscribed__";
+
 /**
  * Initializing a Vue app instance so we can use things like Pinia.
  */
@@ -67,9 +69,12 @@ const { plugin, setupConfig, customElementName, goToPage, useCPlugin } =
       });
 
       const audio = useCiderAudio();
-      audio.subscribe("ready", () => {
-        console.log("CiderAudio is ready!", audio.context);
-      });
+      if (audio && !(audio as Record<string, boolean>)[AUDIO_READY_SUBSCRIPTION_KEY]) {
+        (audio as Record<string, boolean>)[AUDIO_READY_SUBSCRIPTION_KEY] = true;
+        audio.subscribe("ready", () => {
+          console.log("CiderAudio is ready!", audio.context);
+        });
+      }
 
 
     },

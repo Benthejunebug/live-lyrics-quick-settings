@@ -28,9 +28,11 @@ export default defineConfig({
       },
     }),
     {
-      async buildStart(options) {
+      name: 'emit-plugin-yml',
+      apply: 'build',
+      async buildStart() {
         console.log('Building plugin...')
-        // create a plugin.json in assets
+        // create a plugin.yml in assets (build-only; emitFile is not supported in serve mode)
         this.emitFile({
           fileName: 'plugin.yml',
           type: 'asset',
