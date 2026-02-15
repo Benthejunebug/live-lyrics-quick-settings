@@ -20,16 +20,47 @@
       @input="updateOffsetClamped"
       class="offset-slider"
     />
+    <div class="auto-sync">
+      <div class="auto-sync-row">
+        <button
+          class="auto-sync-button"
+          type="button"
+          :disabled="autoSyncState !== 'idle'"
+          @click="handleAutoSync"
+        >
+          <span v-if="autoSyncState === 'listening'">Listening...</span>
+          <span v-else-if="autoSyncState === 'processing'">Processing...</span>
+          <span v-else>Auto Sync</span>
+        </button>
+        <button
+          v-if="undoOffset !== null"
+          class="auto-sync-undo"
+          type="button"
+          @click="handleUndo"
+        >
+          Undo
+        </button>
+      </div>
+      <div v-if="autoSyncMessage" class="auto-sync-message">
+        {{ autoSyncMessage }}
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted, watch, nextTick } from "vue";
 import { useCider } from "@ciderapp/pluginkit";
+import { runAutoSync } from "../utils/autoSync";
 
 const offset = ref(0);
 const cider = useCider();
 const menuRef = ref<HTMLElement | null>(null);
+const autoSyncState = ref<"idle" | "listening" | "processing">("idle");
+const autoSyncMessage = ref<string | null>(null);
+const undoOffset = ref<number | null>(null);
+let undoTimer: number | null = null;
+let autoSyncMessageTimer: number | null = null;
 
 // Keyboard input buffer for typing numbers
 const keyBuffer = ref("");
@@ -48,6 +79,7 @@ const clampOffset = (value: number) => {
 const updateOffsetClamped = () => {
   // Clamp the value to range for slider/wheel
   offset.value = clampOffset(offset.value);
+  clearUndo();
   saveOffset();
 };
 
@@ -72,6 +104,7 @@ const saveOffset = () => {
 
 const resetToZero = () => {
   offset.value = 0;
+  clearUndo();
   saveOffset();
 };
 
@@ -128,6 +161,86 @@ const handleWheel = (event: WheelEvent) => {
   const delta = -Math.sign(event.deltaY) * 0.1;
   offset.value = clampOffset(offset.value + delta);
   updateOffsetClamped();
+};
+
+const clearUndo = () => {
+  undoOffset.value = null;
+  if (undoTimer !== null) {
+    clearTimeout(undoTimer);
+    undoTimer = null;
+  }
+};
+
+const setAutoSyncMessage = (message: string, durationMs = 6000) => {
+  autoSyncMessage.value = message;
+  if (autoSyncMessageTimer !== null) {
+    clearTimeout(autoSyncMessageTimer);
+  }
+  autoSyncMessageTimer = window.setTimeout(() => {
+    autoSyncMessage.value = null;
+    autoSyncMessageTimer = null;
+  }, durationMs);
+};
+
+const clearAutoSyncMessage = () => {
+  autoSyncMessage.value = null;
+  if (autoSyncMessageTimer !== null) {
+    clearTimeout(autoSyncMessageTimer);
+    autoSyncMessageTimer = null;
+  }
+};
+
+const formatOffset = (value: number) => {
+  const sign = value >= 0 ? "+" : "";
+  return `${sign}${value.toFixed(1)}s`;
+};
+
+const applyOffsetWithUndo = (value: number) => {
+  const previous = offset.value;
+  offset.value = clampOffset(value);
+  saveOffset();
+  undoOffset.value = previous;
+  if (undoTimer !== null) {
+    clearTimeout(undoTimer);
+  }
+  undoTimer = window.setTimeout(() => {
+    undoOffset.value = null;
+    undoTimer = null;
+  }, 10000);
+};
+
+const handleUndo = () => {
+  if (undoOffset.value === null) {
+    return;
+  }
+  offset.value = clampOffset(undoOffset.value);
+  saveOffset();
+  clearUndo();
+};
+
+const handleAutoSync = async () => {
+  if (autoSyncState.value !== "idle") {
+    return;
+  }
+  clearAutoSyncMessage();
+  autoSyncState.value = "listening";
+
+  try {
+    const result = await runAutoSync({
+      durationMs: 1500,
+      onPhase: (phase) => {
+        autoSyncState.value = phase;
+      },
+    });
+    autoSyncState.value = "idle";
+    applyOffsetWithUndo(result.offsetSeconds);
+    setAutoSyncMessage(`Auto sync applied ${formatOffset(result.offsetSeconds)}.`);
+  } catch (error) {
+    autoSyncState.value = "idle";
+    const message =
+      error instanceof Error ? error.message : "Auto sync failed.";
+    setAutoSyncMessage(message);
+  }
 };
 
 onMounted(() => {
@@ -204,5 +317,49 @@ onMounted(() => {
   height: 6px;
   accent-color: var(--cider-accent-color, #fa586a);
   cursor: pointer;
+}
+
+.auto-sync {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.auto-sync-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.auto-sync-button,
+.auto-sync-undo {
+  border: none;
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.auto-sync-button {
+  background-color: var(--cider-accent-color, #fa586a);
+  color: white;
+  flex: 1;
+  transition: opacity 0.2s ease;
+}
+
+.auto-sync-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.auto-sync-undo {
+  background-color: rgba(255, 255, 255, 0.12);
+  color: var(--cider-text-color, #eee);
+}
+
+.auto-sync-message {
+  font-size: 12px;
+  color: var(--cider-text-color, #ddd);
 }
 </style>
