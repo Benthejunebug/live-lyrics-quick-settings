@@ -16,6 +16,16 @@ The Auto Sync feature captures a short sample from both Cider's audio output and
 - **Works best with speakers** — the mic needs to hear the same audio that Cider is playing. Headphones won't produce a delay to detect.
 - **Undo** — after auto-sync applies an offset, an Undo link appears for ~10 seconds to revert.
 
+### Troubleshooting
+
+If you see a "Permission denied" error:
+1. Open **System Settings** (macOS) -> **Privacy & Security** -> **Microphone**.
+2. Ensure **Cider** is toggled **ON**.
+3. If Cider doesn't appear, you may need to launch it via terminal once to trigger the prompt:
+   ```bash
+   /Applications/Cider.app/Contents/MacOS/Cider
+   ```
+
 ## Installation
 
 1. Build the plugin:

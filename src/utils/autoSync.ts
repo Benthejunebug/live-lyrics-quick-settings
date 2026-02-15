@@ -58,14 +58,23 @@ export async function runAutoSync(
     onStatus?: (status: AutoSyncStatus) => void,
 ): Promise<AutoSyncResult | AutoSyncError> {
 
+    console.log('[AutoSync] Starting...');
+
     // --- Validate inputs -------------------------------------------------------
     if (!audioContext || audioContext.state === 'closed') {
+        console.error('[AutoSync] AudioContext closed or missing');
         return { ok: false, reason: 'audio-not-ready', message: 'Audio context is not available.' };
     }
 
     // Resume context if suspended
     if (audioContext.state === 'suspended') {
         await audioContext.resume();
+    }
+
+    // --- Check API Support -----------------------------------------------------
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        console.error('[AutoSync] navigator.mediaDevices.getUserMedia not supported');
+        return { ok: false, reason: 'mic-denied', message: 'Microphone access API not supported in this environment.' };
     }
 
     // --- Register worklet ------------------------------------------------------
@@ -79,18 +88,23 @@ export async function runAutoSync(
             workletRegistered = true;
         } catch (e) {
             console.error('[AutoSync] Worklet registration failed:', e);
-            return { ok: false, reason: 'worklet-failed', message: 'AudioWorklet not supported in this environment.' };
+            return { ok: false, reason: 'worklet-failed', message: 'AudioWorklet not supported. Check console for details.' };
         }
     }
 
     // --- Request mic -----------------------------------------------------------
     let micStream: MediaStream;
     try {
+        console.log('[AutoSync] Requesting microphone access...');
         micStream = await navigator.mediaDevices.getUserMedia({
             audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
         });
-    } catch {
-        return { ok: false, reason: 'mic-denied', message: 'Microphone access was denied.' };
+        console.log('[AutoSync] Microphone access granted');
+    } catch (err) {
+        console.error('[AutoSync] Microphone access denied:', err);
+        // @ts-ignore
+        const msg = err.name === 'NotAllowedError' ? 'Microphone permission denied by system/user.' : `Microphone error: ${(err as Error).name}`;
+        return { ok: false, reason: 'mic-denied', message: msg };
     }
 
     // --- Build recording graph -------------------------------------------------
@@ -151,7 +165,8 @@ export async function runAutoSync(
     const micRms = rms(micPCM);
 
     if (streamRms < 0.001 || micRms < 0.001) {
-        return { ok: false, reason: 'low-signal', message: "Couldn't detect enough audio. Make sure music is playing through speakers." };
+        console.warn('[AutoSync] Low signal RMS:', { stream: streamRms, mic: micRms });
+        return { ok: false, reason: 'low-signal', message: "No audio detected. Use speakers, not headphones." };
     }
 
     // Compute envelopes
