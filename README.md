@@ -6,25 +6,6 @@ A Cider Music Player plugin that adds a "Quick Settings" button to the top-right
 
 - **Real-time Lyrics Offset**: Adjust the lyrics offset from -10s to +10s directly from the top bar.
 - **Scroll to Adjust**: Hold `Alt` (default) and scroll on the lyrics view to adjust the offset.
-- **Auto Sync**: Click **Auto Sync** to automatically detect the delay between Cider's internal audio and your speakers via the microphone, then apply the offset.
-
-## Auto Sync
-
-The Auto Sync feature captures a short sample from both Cider's audio output and your microphone, then cross-correlates the two to determine the playback delay.
-
-- **Mic permission required** — your browser/app will prompt for microphone access the first time.
-- **Works best with speakers** — the mic needs to hear the same audio that Cider is playing. Headphones won't produce a delay to detect.
-- **Undo** — after auto-sync applies an offset, an Undo link appears for ~10 seconds to revert.
-
-### Troubleshooting
-
-If you see a "Permission denied" error:
-1. Open **System Settings** (macOS) -> **Privacy & Security** -> **Microphone**.
-2. Ensure **Cider** is toggled **ON**.
-3. If Cider doesn't appear, you may need to launch it via terminal once to trigger the prompt:
-   ```bash
-   /Applications/Cider.app/Contents/MacOS/Cider
-   ```
 
 ## Installation
 
@@ -43,4 +24,3 @@ You can configure the "Scroll to Adjust" feature in the plugin settings:
 - **Enabled**: Toggle the feature on/off.
 - **Modifier Key**: Choose between Alt, Control, Meta, or Shift.
 - **Sensitivity**: Adjust how fast the offset changes when scrolling.
-
