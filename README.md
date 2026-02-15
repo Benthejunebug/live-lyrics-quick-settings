@@ -4,8 +4,13 @@ A Cider Music Player plugin that adds a "Quick Settings" button to the top-right
 
 ## Features
 
-- **Real-time Lyrics Offset**: Adjust the lyrics offset from -10s to +10s directly from the top bar.
+- **Real-time Lyrics Offset**: Adjust the lyrics offset from -5s to +15s directly from the top bar.
 - **Scroll to Adjust**: Hold `Alt` (default) and scroll on the lyrics view to adjust the offset.
+- **Auto Sync (Beta)**: Automatically estimate the offset using your microphone while music is playing.
+
+## Auto Sync
+
+Auto Sync listens to your mic for a short moment and compares it with the internal audio stream to estimate the lyrics delay. It works best with speakers (not headphones) so the mic can hear playback. You’ll be prompted for mic permission the first time, and the feature may fail if playback is too quiet or no track is playing.
 
 ## Installation
 
