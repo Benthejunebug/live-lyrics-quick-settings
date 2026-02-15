@@ -238,6 +238,9 @@ export async function runAutoSync(options: RunAutoSyncOptions = {}): Promise<Aut
     settings,
   };
 
+  let micStream: MediaStream | null = null;
+  let micContext: AudioContext | null = null;
+
   try {
     // 1. Check Cider Audio
     const audio = useCiderAudio();
@@ -258,7 +261,6 @@ export async function runAutoSync(options: RunAutoSyncOptions = {}): Promise<Aut
     }
 
     // 3. Get Mic Stream
-    let micStream: MediaStream;
     try {
       micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -268,7 +270,6 @@ export async function runAutoSync(options: RunAutoSyncOptions = {}): Promise<Aut
         },
       });
       debugLog.micStreamId = micStream.id;
-      const track = micStream.getAudioTracks()[0];
       debugLog.micTracks = micStream.getAudioTracks().map(t => ({
         label: t.label,
         readyState: t.readyState,
@@ -284,7 +285,7 @@ export async function runAutoSync(options: RunAutoSyncOptions = {}): Promise<Aut
       throw new Error(`Microphone access failed: ${e.message}`);
     }
 
-    // 4. Ensure Audio Context is Ready
+    // 4. Ensure Cider Audio Context is Ready
     if (!audio.context && typeof audio.init === "function") {
       try {
         debugLog.callingInit = true;
@@ -294,10 +295,8 @@ export async function runAutoSync(options: RunAutoSyncOptions = {}): Promise<Aut
       }
     }
 
-    // Log keys to see what we actually have
     debugLog.audioKeys = Object.keys(audio);
 
-    // Increase timeout to 5s
     const readyTimeoutMs = 5000;
     const startWait = now();
     while (!audio.context) {
@@ -307,38 +306,50 @@ export async function runAutoSync(options: RunAutoSyncOptions = {}): Promise<Aut
       await delay(100);
     }
 
-    const context = audio.context as AudioContext;
-    debugLog.contextState = context.state;
-    debugLog.sampleRate = context.sampleRate;
-    debugLog.baseLatency = context.baseLatency;
+    const ciderContext = audio.context as AudioContext;
+    debugLog.ciderContextState = ciderContext.state;
+    debugLog.ciderSampleRate = ciderContext.sampleRate;
 
-    if (context.state === "suspended") {
-      try { await context.resume(); } catch (e: any) {
+    if (ciderContext.state === "suspended") {
+      try { await ciderContext.resume(); } catch (e: any) {
         debugLog.resumeError = e.message;
       }
     }
 
-    // 5. Identify Stream Source (Tap Node)
-    let tapNode = audio.source || audio.audioNodes?.gainNode;
+    // 5. Create a SEPARATE AudioContext for mic at the mic's native sample rate
+    // This avoids the sample rate mismatch that causes silence.
+    // Cider runs at 96kHz, mic runs at 44.1kHz — connecting them produces zeros.
+    const micTrackSettings = micStream.getAudioTracks()[0]?.getSettings();
+    const micNativeRate = micTrackSettings?.sampleRate || 44100;
+    debugLog.micNativeSampleRate = micNativeRate;
+
+    micContext = new AudioContext({ sampleRate: micNativeRate });
+    debugLog.micContextSampleRate = micContext.sampleRate;
+    debugLog.micContextState = micContext.state;
+
+    if (micContext.state === "suspended") {
+      await micContext.resume();
+    }
+
+    // 6. Identify Stream Source (Tap Node)
+    const tapNode = audio.source || audio.audioNodes?.gainNode;
     debugLog.hasTapNode = !!tapNode;
     if (!tapNode) throw new Error("Could not find Cider audio source node to tap");
 
-    // 6. Capture!
-    const micSource = context.createMediaStreamSource(micStream);
+    // 7. Create mic source in the MIC context (not Cider's context!)
+    const micSource = micContext.createMediaStreamSource(micStream);
 
     settings.onPhase?.("listening");
 
+    // Capture stream audio from Cider's context, mic audio from mic's context
     const [streamSamples, micSamples] = await Promise.all([
-      captureAudio(context, tapNode, settings.durationMs, debugLog),
-      captureAudio(context, micSource, settings.durationMs, debugLog) // Re-using capture function logic implies parallel Worklets? Yes.
-      // Note: We might need to give them unique names if registered globally?
-      // AudioWorklet addModule is per context. If we add the same module twice it's fine or ignored.
-      // Just need to make sure we don't conflict. The class name Registry is global to the WorkletScope.
-      // We can just addModule once.
+      captureAudio(ciderContext, tapNode, settings.durationMs, debugLog),
+      captureAudio(micContext, micSource, settings.durationMs, debugLog)
     ]);
 
     // Stop mic
     micStream.getTracks().forEach(t => t.stop());
+    micStream = null;
 
     debugLog.capturedSamples = {
       stream: streamSamples.length,
@@ -347,9 +358,18 @@ export async function runAutoSync(options: RunAutoSyncOptions = {}): Promise<Aut
 
     settings.onPhase?.("processing");
 
-    // 7. Analysis
+    // 8. Resample mic audio to match Cider's sample rate for correlation
+    // We use simple linear interpolation resampling
+    const resampledMic = resampleLinear(micSamples, micContext.sampleRate, ciderContext.sampleRate);
+    debugLog.resampledMicLength = resampledMic.length;
+
+    // Close mic context
+    try { await micContext.close(); } catch (e) { }
+    micContext = null;
+
+    // 9. Analysis
     const streamRms = computeRms(streamSamples);
-    const micRms = computeRms(micSamples);
+    const micRms = computeRms(resampledMic);
 
     debugLog.rms = { stream: streamRms, mic: micRms };
 
@@ -363,10 +383,11 @@ export async function runAutoSync(options: RunAutoSyncOptions = {}): Promise<Aut
     }
 
     const streamEnv = normalize(buildEnvelope(streamSamples, settings.frameSize, settings.hop));
-    const micEnv = normalize(buildEnvelope(micSamples, settings.frameSize, settings.hop));
+    // Use hop scaled to mic's effective rate after resampling
+    const micEnv = normalize(buildEnvelope(resampledMic, settings.frameSize, settings.hop));
 
     const maxLagFrames = Math.min(
-      Math.round((settings.maxLagSec * context.sampleRate) / settings.hop),
+      Math.round((settings.maxLagSec * ciderContext.sampleRate) / settings.hop),
       Math.max(1, Math.min(streamEnv.length, micEnv.length) - 1)
     );
 
@@ -378,7 +399,7 @@ export async function runAutoSync(options: RunAutoSyncOptions = {}): Promise<Aut
       throw new Error(`Correlation too low (${corr.toFixed(3)}). Sync failed.`);
     }
 
-    const offsetSeconds = clampOffset((lag * settings.hop) / context.sampleRate);
+    const offsetSeconds = clampOffset((lag * settings.hop) / ciderContext.sampleRate);
     debugLog.finalOffset = offsetSeconds;
 
     return {
@@ -389,10 +410,33 @@ export async function runAutoSync(options: RunAutoSyncOptions = {}): Promise<Aut
 
   } catch (error: any) {
     debugLog.error = error.message || String(error);
-    // Return debug info even on failure if possible, or throw with debug info attached?
-    // We'll throw and attach debug log to the error object to be caught by UI
     const err = new Error(error.message);
     (err as any).debug = debugLog;
     throw err;
+  } finally {
+    // Cleanup
+    if (micStream) {
+      micStream.getTracks().forEach(t => t.stop());
+    }
+    if (micContext) {
+      try { micContext.close(); } catch (e) { }
+    }
   }
 }
+
+// --- Resampling ---
+
+const resampleLinear = (input: Float32Array, fromRate: number, toRate: number): Float32Array => {
+  if (fromRate === toRate) return input;
+  const ratio = fromRate / toRate;
+  const outputLength = Math.round(input.length / ratio);
+  const output = new Float32Array(outputLength);
+  for (let i = 0; i < outputLength; i++) {
+    const srcIdx = i * ratio;
+    const lo = Math.floor(srcIdx);
+    const hi = Math.min(lo + 1, input.length - 1);
+    const frac = srcIdx - lo;
+    output[i] = input[lo] * (1 - frac) + input[hi] * frac;
+  }
+  return output;
+};
