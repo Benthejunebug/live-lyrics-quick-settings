@@ -59,6 +59,7 @@
 import { ref, onMounted, watch, nextTick, computed, onUnmounted } from "vue";
 import { useCider } from "@ciderapp/pluginkit";
 import { runAutoSync } from "../utils/autoSync";
+import { useConfig } from "../main";
 
 const offset = ref(0);
 const cider = useCider();
@@ -68,6 +69,7 @@ const autoSyncMessage = ref("");
 const autoSyncIsError = ref(false);
 const undoOffset = ref<number | null>(null);
 const debugInfo = ref<any>(null);
+const config = useConfig();
 let undoTimer: number | null = null;
 
 // Keyboard input buffer for typing numbers
@@ -132,6 +134,9 @@ const handleAutoSync = async (event: MouseEvent) => {
       onPhase: (phase) => {
         autoSyncState.value = phase;
       },
+      useCompanionMic: config.audio.useCompanionMic,
+      companionUrl: config.audio.companionUrl,
+      companionConnectTimeoutMs: config.audio.companionConnectTimeoutMs,
     });
     
     applyOffset(result.offsetSeconds);

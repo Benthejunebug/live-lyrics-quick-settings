@@ -15,6 +15,10 @@ export type RunAutoSyncOptions = {
   frameSize?: number;
   hop?: number;
   micGain?: number;
+  readyTimeoutMs?: number;
+  useCompanionMic?: boolean;
+  companionUrl?: string;
+  companionConnectTimeoutMs?: number;
   onPhase?: (phase: AutoSyncPhase) => void;
 };
 
@@ -26,6 +30,9 @@ const DEFAULTS = {
   hop: 256,
   minRms: 0.0005,
   readyTimeoutMs: 5000,
+  useCompanionMic: true,
+  companionUrl: "ws://127.0.0.1:17890",
+  companionConnectTimeoutMs: 1000,
 };
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -40,36 +47,86 @@ class SyncCaptureProcessor extends AudioWorkletProcessor {
     this.totalSamples = 0;
     this.isRecording = true;
     this.hasSeenSignal = false;
+    this.inputFrameSize = 0;
+    this.channelStats = null;
+    this.signalChannel = null;
     this.port.onmessage = (event) => {
       if (event.data === "stop") {
         this.isRecording = false;
-        this.port.postMessage({ type: "buffer", buffers: this.buffers, totalSamples: this.totalSamples });
+        this.port.postMessage({
+          type: "buffer",
+          buffers: this.buffers,
+          totalSamples: this.totalSamples,
+          stats: this.buildStats()
+        });
         this.buffers = []; // clear memory
       }
+    };
+  }
+
+  buildStats() {
+    if (!this.channelStats) return null;
+    const channelStats = [];
+    for (let i = 0; i < this.channelStats.length; i++) {
+      const s = this.channelStats[i];
+      channelStats.push({
+        sampleCount: s.sampleCount,
+        nonZeroCount: s.nonZeroCount,
+        maxAbs: s.maxAbs,
+        rms: s.sampleCount ? Math.sqrt(s.sumSq / s.sampleCount) : 0
+      });
+    }
+    return {
+      inputChannelCount: this.channelStats.length,
+      inputFrameSize: this.inputFrameSize,
+      signalChannel: this.signalChannel,
+      channelStats
     };
   }
 
   process(inputs, outputs, parameters) {
     if (!this.isRecording) return true;
     
-    // Input 0, Channel 0
+    // Input 0, all channels (we capture channel 0 but track stats for all channels)
     const input = inputs[0];
     if (input && input.length > 0) {
-      const float32 = input[0];
-      if (float32) {
-        if (!this.hasSeenSignal) {
-           for (let i = 0; i < float32.length; i++) {
-             if (float32[i] !== 0) {
-                this.hasSeenSignal = true;
-                this.port.postMessage({ type: "signal-detected" });
-                break;
-             }
-           }
+      if (!this.channelStats || this.channelStats.length !== input.length) {
+        this.channelStats = [];
+        for (let c = 0; c < input.length; c++) {
+          this.channelStats.push({ sumSq: 0, maxAbs: 0, nonZeroCount: 0, sampleCount: 0 });
         }
+      }
+
+      const frameSize = input[0]?.length || 0;
+      if (!this.inputFrameSize && frameSize) this.inputFrameSize = frameSize;
+
+      for (let c = 0; c < input.length; c++) {
+        const channel = input[c];
+        if (!channel) continue;
+        const stats = this.channelStats[c];
+        stats.sampleCount += channel.length;
+        for (let i = 0; i < channel.length; i++) {
+          const v = channel[i];
+          if (v !== 0) {
+            stats.nonZeroCount += 1;
+            if (!this.hasSeenSignal) {
+              this.hasSeenSignal = true;
+              this.signalChannel = c;
+              this.port.postMessage({ type: "signal-detected", channel: c });
+            }
+          }
+          const abs = v < 0 ? -v : v;
+          if (abs > stats.maxAbs) stats.maxAbs = abs;
+          stats.sumSq += v * v;
+        }
+      }
+
+      const channel0 = input[0];
+      if (channel0) {
         // Clone the buffer to send it, or store it
         // We store chunks and send them all at once at the end to minimize message passing overhead during recording
         // But for long recordings memory might be an issue. For 1.5s (72k samples) it's ~288KB, totally fine.
-        const copy = new Float32Array(float32);
+        const copy = new Float32Array(channel0);
         this.buffers.push(copy);
         this.totalSamples += copy.length;
       }
@@ -88,6 +145,246 @@ const getProcessorBlobUrl = () => {
 
 const clampOffset = (value: number) => {
   return Math.max(-5, Math.min(15, Math.round(value * 10) / 10));
+};
+
+type CompanionHello = {
+  type: "hello";
+  sampleRate: number;
+  channels: number;
+  format: string;
+  frameSize: number;
+};
+
+type CompanionSession = {
+  ws: WebSocket;
+  hello: CompanionHello;
+  buffered: ArrayBuffer[];
+  closed: boolean;
+};
+
+const requestHostMicAccess = async (debugLog: Record<string, any>) => {
+  const result: Record<string, any> = {
+    attempted: true,
+    method: "unavailable",
+  };
+
+  try {
+    const win: any = window as any;
+    result.hasWindowRequire = typeof win?.require === "function";
+    if (!result.hasWindowRequire) {
+      debugLog.micAccessRequest = result;
+      console.warn("[AutoSync] window.require not available; cannot call electron systemPreferences.");
+      return;
+    }
+
+    const electron = win.require("electron");
+    result.hasElectron = !!electron;
+    const systemPreferences = electron?.systemPreferences;
+    result.hasSystemPreferences = !!systemPreferences;
+    if (systemPreferences?.askForMediaAccess) {
+      result.method = "electron.systemPreferences.askForMediaAccess";
+      result.media = "microphone";
+      try {
+        result.granted = await systemPreferences.askForMediaAccess("microphone");
+        console.log(`[AutoSync] Mic access request via systemPreferences: ${result.granted}`);
+      } catch (e: any) {
+        result.error = e?.message || String(e);
+        console.warn("[AutoSync] systemPreferences.askForMediaAccess failed:", result.error);
+      }
+    }
+  } catch (e: any) {
+    result.error = e?.message || String(e);
+    console.warn("[AutoSync] Unable to access electron systemPreferences:", result.error);
+  } finally {
+    debugLog.micAccessRequest = result;
+  }
+};
+
+const probeLegacyElectronBridge = (debugLog: Record<string, any>) => {
+  const win: any = window as any;
+  const candidateKeys = [
+    "electron",
+    "__electron",
+    "ipcRenderer",
+    "__ipcRenderer",
+    "CiderApp",
+    "__PLUGINSYS__",
+    "__bridge",
+    "bridge",
+  ];
+
+  const windowKeys: Record<string, string> = {};
+  for (const key of candidateKeys) {
+    if (key in win) {
+      windowKeys[key] = typeof win[key];
+    }
+  }
+
+  const probe = {
+    windowKeys,
+    hasElectronGlobal: !!win.electron,
+    hasElectronIpcRenderer: !!win.electron?.ipcRenderer,
+    hasIpcRendererGlobal: !!win.ipcRenderer,
+    hasCiderAppIpcRenderer: !!win.CiderApp?.ipcRenderer,
+    hasCiderAppIpc: !!win.CiderApp?.ipc,
+    hasPluginSysExternalMessages: !!win.__PLUGINSYS__?.ExternalMessages?.dispatchEvent,
+    hasPluginSysPAPI: !!win.__PLUGINSYS__?.PAPIInstance?.addEventListener,
+  };
+
+  debugLog.bridgeProbe = probe;
+  console.log("[AutoSync] Bridge probe:", probe);
+};
+
+const parseCompanionHello = (value: any): CompanionHello | null => {
+  if (!value || value.type !== "hello") return null;
+  if (typeof value.sampleRate !== "number") return null;
+  if (typeof value.channels !== "number") return null;
+  if (typeof value.format !== "string") return null;
+  if (typeof value.frameSize !== "number") return null;
+  return value as CompanionHello;
+};
+
+const connectCompanion = async (
+  url: string,
+  timeoutMs: number,
+  debugLog: Record<string, any>
+): Promise<CompanionSession> => {
+  debugLog.companionUrl = url;
+  return new Promise((resolve, reject) => {
+    let resolved = false;
+    const ws = new WebSocket(url);
+    ws.binaryType = "arraybuffer";
+    const buffered: ArrayBuffer[] = [];
+    const timer = setTimeout(() => {
+      if (resolved) return;
+      resolved = true;
+      try { ws.close(); } catch (e) { }
+      reject(new Error(`Companion connection timeout after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    const cleanup = () => {
+      clearTimeout(timer);
+    };
+
+    ws.onerror = () => {
+      if (resolved) return;
+      resolved = true;
+      cleanup();
+      reject(new Error("Companion connection error"));
+    };
+
+    ws.onmessage = (event) => {
+      if (resolved) return;
+      if (typeof event.data === "string") {
+        try {
+          const parsed = JSON.parse(event.data);
+          const hello = parseCompanionHello(parsed);
+          if (hello) {
+            resolved = true;
+            cleanup();
+            debugLog.companionConnected = true;
+            debugLog.companionHello = hello;
+            resolve({ ws, hello, buffered, closed: false });
+            return;
+          }
+        } catch (e) {
+          // ignore non-JSON until timeout
+        }
+      } else if (event.data instanceof ArrayBuffer) {
+        buffered.push(event.data);
+      } else if (event.data instanceof Blob) {
+        event.data.arrayBuffer().then((buf) => buffered.push(buf));
+      }
+    };
+
+    ws.onclose = () => {
+      if (resolved) return;
+      resolved = true;
+      cleanup();
+      reject(new Error("Companion connection closed"));
+    };
+  });
+};
+
+const decodePcm16Frames = (
+  buffer: ArrayBuffer,
+  channels: number,
+  out: number[]
+) => {
+  const int16 = new Int16Array(buffer);
+  const frameCount = Math.floor(int16.length / channels);
+  for (let i = 0; i < frameCount; i += 1) {
+    let sum = 0;
+    const base = i * channels;
+    for (let c = 0; c < channels; c += 1) {
+      sum += int16[base + c];
+    }
+    const mono = sum / channels;
+    out.push(mono / 32768);
+  }
+};
+
+const captureCompanionMic = async (
+  session: CompanionSession,
+  durationMs: number,
+  debugLog: Record<string, any>
+): Promise<{ samples: Float32Array; sampleRate: number }> => {
+  const { ws, hello, buffered } = session;
+  const sampleRate = hello.sampleRate;
+  const channels = Math.max(1, hello.channels || 1);
+  if (hello.format !== "pcm16") {
+    throw new Error(`Unsupported companion format: ${hello.format}`);
+  }
+  const expectedSamples = Math.round((sampleRate * durationMs) / 1000);
+  const floats: number[] = [];
+  let bytesReceived = 0;
+
+  const addBuffer = (buf: ArrayBuffer) => {
+    bytesReceived += buf.byteLength;
+    decodePcm16Frames(buf, channels, floats);
+  };
+
+  buffered.forEach(addBuffer);
+  buffered.length = 0;
+
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      ws.onmessage = null;
+      ws.onclose = null;
+      try {
+        ws.send(JSON.stringify({ type: "stop" }));
+      } catch (e) { }
+      try { ws.close(); } catch (e) { }
+      const clipped = floats.slice(0, expectedSamples);
+      debugLog.companionBytesReceived = bytesReceived;
+      debugLog.companionSamplesReceived = clipped.length;
+      resolve({ samples: new Float32Array(clipped), sampleRate });
+    };
+
+    const timer = setTimeout(finish, durationMs + 250);
+
+    ws.onmessage = (event) => {
+      if (event.data instanceof ArrayBuffer) {
+        addBuffer(event.data);
+      } else if (event.data instanceof Blob) {
+        event.data.arrayBuffer().then((buf) => addBuffer(buf));
+      } else if (typeof event.data === "string") {
+        // ignore control messages
+      }
+      if (floats.length >= expectedSamples) {
+        clearTimeout(timer);
+        finish();
+      }
+    };
+
+    ws.onclose = () => {
+      clearTimeout(timer);
+      finish();
+    };
+  });
 };
 
 const concatFloat32Chunks = (chunks: Float32Array[], totalLength: number) => {
@@ -109,6 +406,52 @@ const computeRms = (samples: Float32Array) => {
     sum += v * v;
   }
   return Math.sqrt(sum / Math.max(1, samples.length));
+};
+
+const computeSampleStats = (samples: Float32Array) => {
+  const length = samples.length;
+  let min = 0;
+  let max = 0;
+  let absMax = 0;
+  let sum = 0;
+  let sumSq = 0;
+  let nonZeroCount = 0;
+
+  if (length > 0) {
+    min = samples[0];
+    max = samples[0];
+  }
+
+  for (let i = 0; i < length; i += 1) {
+    const v = samples[i];
+    if (v !== 0) nonZeroCount += 1;
+    if (v < min) min = v;
+    if (v > max) max = v;
+    const abs = v < 0 ? -v : v;
+    if (abs > absMax) absMax = abs;
+    sum += v;
+    sumSq += v * v;
+  }
+
+  const mean = length ? sum / length : 0;
+  const rms = length ? Math.sqrt(sumSq / length) : 0;
+  const zeroPercent = length ? (length - nonZeroCount) / length : 1;
+
+  return {
+    length,
+    min,
+    max,
+    absMax,
+    mean,
+    rms,
+    nonZeroCount,
+    zeroPercent
+  };
+};
+
+const formatSampleStats = (stats: ReturnType<typeof computeSampleStats>) => {
+  const nonZeroPct = (100 * (1 - stats.zeroPercent)).toFixed(2);
+  return `len=${stats.length}, rms=${stats.rms.toFixed(5)}, min=${stats.min.toFixed(5)}, max=${stats.max.toFixed(5)}, absMax=${stats.absMax.toFixed(5)}, nonZero=${nonZeroPct}%`;
 };
 
 const buildEnvelope = (samples: Float32Array, frameSize: number, hop: number) => {
@@ -200,6 +543,9 @@ const captureAudio = async (
       if (event.data.type === "signal-detected") {
         console.log(`[AutoSync] Signal detected in ${name}!`);
         debugLog[name + "HadSignal"] = true;
+        if (typeof event.data.channel === "number") {
+          debugLog[name + "SignalChannel"] = event.data.channel;
+        }
       }
       // buffer handling is in promise below
     };
@@ -223,7 +569,22 @@ const captureAudio = async (
       const messageHandler = (event: MessageEvent) => {
         if (event.data.type === "buffer") {
           workletNode?.port.removeEventListener("message", messageHandler);
-          const { buffers, totalSamples } = event.data;
+          const { buffers, totalSamples, stats } = event.data;
+          if (stats) {
+            debugLog[name + "WorkletStats"] = stats;
+            if (Array.isArray(stats.channelStats)) {
+              const channelSummary = stats.channelStats
+                .map((s: any, idx: number) => {
+                  const rms = typeof s.rms === "number" ? s.rms.toFixed(5) : "n/a";
+                  const nonZeroPct = s.sampleCount
+                    ? (100 * (s.nonZeroCount / s.sampleCount)).toFixed(2)
+                    : "0.00";
+                  return `ch${idx}: rms=${rms}, nonZero=${nonZeroPct}%, maxAbs=${typeof s.maxAbs === "number" ? s.maxAbs.toFixed(5) : "n/a"}`;
+                })
+                .join(" | ");
+              console.log(`[AutoSync] ${name} worklet channels: ${channelSummary}`);
+            }
+          }
           const result = concatFloat32Chunks(buffers, totalSamples);
 
           // Cleanup
@@ -265,6 +626,8 @@ export async function runAutoSync(options: RunAutoSyncOptions = {}): Promise<Aut
 
   let micStream: MediaStream | null = null;
   let micContext: AudioContext | null = null;
+  let micCaptureSource: "companion" | "browser" = "browser";
+  let companionSession: CompanionSession | null = null;
 
   try {
     // 1. Check Cider Audio
@@ -272,6 +635,10 @@ export async function runAutoSync(options: RunAutoSyncOptions = {}): Promise<Aut
     debugLog.hasCiderAudio = !!audio;
     if (!audio) throw new Error("Cider audio not initialized");
     console.log("[AutoSync] Cider audio initialized.");
+
+    // 1.5. Ask host app (if possible) to trigger OS mic permission prompt
+    await requestHostMicAccess(debugLog);
+    probeLegacyElectronBridge(debugLog);
 
     // 2. Check Permissions
     if (navigator.permissions?.query) {
@@ -288,63 +655,32 @@ export async function runAutoSync(options: RunAutoSyncOptions = {}): Promise<Aut
       }
     }
 
-    // 3. Get Mic Stream
-    try {
-      // User reported that echoCancellation: true suppresses the music we want to sync to.
-      // We start with it FALSE.
-      // The previous "silence" issue was likely due to the 96kHz vs 44.1kHz mismatch,
-      // which we are now solving with 'micContext'.
-      micStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-        },
-      });
-      debugLog.micStreamId = micStream.id;
-      debugLog.micTracks = micStream.getAudioTracks().map(t => ({
-        label: t.label,
-        readyState: t.readyState,
-        enabled: t.enabled,
-        settings: t.getSettings ? t.getSettings() : 'unavailable'
-      }));
-      console.log("[AutoSync] Microphone stream obtained (EchoCancellation: OFF).");
-    } catch (e: any) {
-      debugLog.getUserMediaError = {
-        name: e.name,
-        message: e.message,
-        stack: e.stack
-      };
-      throw new Error(`Microphone access failed: ${e.message}`);
-    }
-
-    // 4. Ensure Cider Audio Context is Ready
+    // 3. Ensure Cider Audio Context is Ready
     if (!audio.context && typeof audio.init === "function") {
       try {
         debugLog.callingInit = true;
         console.log("[AutoSync] Calling Cider audio.init()...");
         await audio.init();
       } catch (e: any) {
-        debugLog.initError = e.message;
-        console.warn("[AutoSync] Error calling Cider audio.init():", e.message);
+        debugLog.initError = e?.message || String(e);
+        console.warn("[AutoSync] Error calling Cider audio.init():", e);
       }
     }
 
     debugLog.audioKeys = Object.keys(audio);
 
-    const readyTimeoutMs = 5000;
-    const startWait = now();
+    const waitStart = now();
     while (!audio.context) {
-      if (now() - startWait > readyTimeoutMs) {
-        throw new Error(`Cider Audio Context timed out after ${readyTimeoutMs}ms. Is music playing?`);
+      if (now() - waitStart > settings.readyTimeoutMs) {
+        throw new Error(`Cider Audio Context timed out after ${settings.readyTimeoutMs}ms. Is music playing?`);
       }
       await delay(100);
     }
-    console.log("[AutoSync] Cider audio context is ready.");
 
     const ciderContext = audio.context as AudioContext;
     debugLog.ciderContextState = ciderContext.state;
     debugLog.ciderSampleRate = ciderContext.sampleRate;
+    console.log("[AutoSync] Cider audio context is ready.");
 
     if (ciderContext.state === "suspended") {
       try {
@@ -356,58 +692,180 @@ export async function runAutoSync(options: RunAutoSyncOptions = {}): Promise<Aut
       }
     }
 
-    // 5. Create a SEPARATE AudioContext for mic at the mic's native sample rate
-    // This avoids the sample rate mismatch that causes silence.
-    // Cider runs at 96kHz, mic runs at 44.1kHz — connecting them produces zeros.
-    const micTrackSettings = micStream.getAudioTracks()[0]?.getSettings();
-    const micNativeRate = micTrackSettings?.sampleRate || 44100;
-    debugLog.micNativeSampleRate = micNativeRate;
-
-    micContext = new AudioContext({ sampleRate: micNativeRate });
-    debugLog.micContextSampleRate = micContext.sampleRate;
-    debugLog.micContextState = micContext.state;
-    console.log(`[AutoSync] Mic audio context created at ${micNativeRate}Hz.`);
-
-    if (micContext.state === "suspended") {
-      await micContext.resume();
-      console.log("[AutoSync] Resumed mic audio context.");
-    }
-
-    // 6. Identify Stream Source (Tap Node)
+    // 4. Identify Stream Source (Tap Node)
     const tapNode = audio.source || audio.audioNodes?.gainNode;
     debugLog.hasTapNode = !!tapNode;
     if (!tapNode) throw new Error("Could not find Cider audio source node to tap");
     console.log("[AutoSync] Cider audio source node identified.");
 
-    // 7. Create mic source in the MIC context (not Cider's context!)
-    const micSource = micContext.createMediaStreamSource(micStream);
+    // 5. Prepare mic capture (companion or browser)
+    let micCapturePromise: Promise<{ samples: Float32Array; sampleRate: number }> | null = null;
+    let micSampleRate = 44100;
 
-    // Optional: Boost gain if needed, but start with 1.0 for raw capture
-    const micGainNode = micContext.createGain();
-    micGainNode.gain.value = settings.micGain || 1.0;
-    micSource.connect(micGainNode);
+    if (settings.useCompanionMic) {
+      debugLog.companionAttempted = true;
+      try {
+        companionSession = await connectCompanion(
+          settings.companionUrl,
+          settings.companionConnectTimeoutMs,
+          debugLog
+        );
+        micCaptureSource = "companion";
+        debugLog.micCaptureSource = micCaptureSource;
+        micSampleRate = companionSession.hello.sampleRate;
+        micCapturePromise = captureCompanionMic(companionSession, settings.durationMs, debugLog);
+      } catch (e: any) {
+        debugLog.companionError = e?.message || String(e);
+        console.warn("[AutoSync] Companion connection failed, falling back to browser mic:", e);
+      }
+    }
 
-    console.log(`[AutoSync] Mic source created with ${micGainNode.gain.value}x software gain.`);
+    if (micCaptureSource !== "companion") {
+      // 5a. Get Mic Stream (browser path)
+      try {
+        // Step 5a-1: Enumerate devices to find the correct ID if possible
+        // This helps avoid "Virtual" default devices that might not support raw audio
+        let deviceId = "default";
+        try {
+          debugLog.supportedConstraints = navigator.mediaDevices.getSupportedConstraints?.() || {};
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const audioInputs = devices.filter(d => d.kind === "audioinput");
+          debugLog.availableDevices = audioInputs.map(d => ({ label: d.label, id: d.deviceId }));
+        } catch (e) {
+          console.warn("[AutoSync] Failed to enumerate devices:", e);
+        }
+
+        // Step 5a-2: Request Stream with Explicit Constraints
+        // User DEMANDS echoCancellation: false.
+        // We ADD channelCount: 1 to ensure Mono mics don't get lost in Stereo mapping
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            deviceId: deviceId,
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+            channelCount: 1, // FORCE MONO. Critical for raw capture on some macOS devices.
+            // sampleRate: ... we don't set this, we let OS decide and match it with micContext
+          },
+        });
+
+        debugLog.micStreamId = micStream.id;
+        const track = micStream.getAudioTracks()[0];
+        const trackSettings = track.getSettings ? track.getSettings() : {};
+
+        debugLog.micTrackSettings = trackSettings;
+        debugLog.micTrackState = {
+          label: track.label,
+          enabled: track.enabled,
+          muted: track.muted,
+          readyState: track.readyState
+        };
+        if (track.getConstraints) {
+          debugLog.micTrackConstraints = track.getConstraints();
+        }
+        const trackAny = track as any;
+        if (typeof trackAny.getCapabilities === "function") {
+          try {
+            debugLog.micTrackCapabilities = trackAny.getCapabilities();
+          } catch (e) {
+            debugLog.micTrackCapabilitiesError = String(e);
+          }
+        }
+        debugLog.micStreamActive = micStream.active;
+        console.log(`[AutoSync] Mic Stream Obtained. Label: ${track.label}, ID: ${trackSettings.deviceId}`);
+        console.log(`[AutoSync] Constraints - EchoCancel: ${trackSettings.echoCancellation}, Channels: ${trackSettings.channelCount}, Rate: ${trackSettings.sampleRate}`);
+
+      } catch (e: any) {
+        debugLog.getUserMediaError = {
+          name: e.name,
+          message: e.message,
+          stack: e.stack
+        };
+        throw new Error(`Microphone access failed: ${e.message}`);
+      }
+
+      // 5b. Create a SEPARATE AudioContext for mic at the mic's native sample rate
+      // This avoids the sample rate mismatch that causes silence.
+      // Cider runs at 96kHz, mic runs at 44.1kHz — connecting them produces zeros.
+      const micTrackSettings = micStream.getAudioTracks()[0]?.getSettings();
+      const micNativeRate = micTrackSettings?.sampleRate || 44100;
+      debugLog.micNativeSampleRate = micNativeRate;
+
+      micContext = new AudioContext({ sampleRate: micNativeRate });
+      debugLog.micContextSampleRate = micContext.sampleRate;
+      debugLog.micContextState = micContext.state;
+      console.log(`[AutoSync] Mic audio context created at ${micNativeRate}Hz.`);
+
+      if (micContext.state === "suspended") {
+        await micContext.resume();
+        console.log("[AutoSync] Resumed mic audio context.");
+      }
+
+      // 5c. Create mic source in the MIC context (not Cider's context!)
+      const micSource = micContext.createMediaStreamSource(micStream);
+      debugLog.micSourceNode = {
+        channelCount: micSource.channelCount,
+        channelCountMode: micSource.channelCountMode,
+        channelInterpretation: micSource.channelInterpretation,
+        numberOfOutputs: micSource.numberOfOutputs
+      };
+
+      // Optional: Boost gain if needed, but start with 1.0 for raw capture
+      const micGainNode = micContext.createGain();
+      micGainNode.gain.value = settings.micGain || 1.0;
+      micSource.connect(micGainNode);
+
+      console.log(`[AutoSync] Mic source created with ${micGainNode.gain.value}x software gain.`);
+
+      micCaptureSource = "browser";
+      debugLog.micCaptureSource = micCaptureSource;
+      micSampleRate = micContext.sampleRate;
+      micCapturePromise = captureAudio(micContext!, micGainNode, settings.durationMs, debugLog, "mic")
+        .then((samples) => ({ samples, sampleRate: micContext!.sampleRate }));
+    }
+
+    if (!micCapturePromise) {
+      throw new Error("Microphone capture could not be initialized.");
+    }
 
     settings.onPhase?.("listening");
     console.log(`[AutoSync] Listening for ${settings.durationMs}ms...`);
 
-    // Capture stream audio from Cider's context, mic audio from mic's context
+    // Capture stream audio from Cider's context, mic audio from companion or browser
     console.log("[AutoSync] Starting capture...");
-    const [streamSamples, micSamples] = await Promise.all([
+    const [streamSamples, micCapture] = await Promise.all([
       captureAudio(ciderContext, tapNode, settings.durationMs, debugLog, "stream"),
-      captureAudio(micContext!, micGainNode, settings.durationMs, debugLog, "mic") // Capture from GainNode
+      micCapturePromise
     ]);
+    let micSamples = micCapture.samples;
+    micSampleRate = micCapture.sampleRate;
+
+    if (micCaptureSource === "companion" && settings.micGain && settings.micGain !== 1.0) {
+      const gain = settings.micGain;
+      for (let i = 0; i < micSamples.length; i += 1) {
+        let v = micSamples[i] * gain;
+        if (v > 1) v = 1;
+        if (v < -1) v = -1;
+        micSamples[i] = v;
+      }
+    }
+
     console.log(`[AutoSync] Capture complete. Stream: ${streamSamples.length} samples, Mic: ${micSamples.length} samples.`);
 
-    // Stop mic
-    micStream.getTracks().forEach(t => t.stop());
-    micStream = null;
-    console.log("[AutoSync] Microphone stream stopped.");
+    // Stop mic (browser path only)
+    if (micStream) {
+      micStream.getTracks().forEach(t => t.stop());
+      micStream = null;
+      console.log("[AutoSync] Microphone stream stopped.");
+    }
 
     debugLog.capturedSamples = {
       stream: streamSamples.length,
       mic: micSamples.length
+    };
+    debugLog.expectedSamples = {
+      stream: Math.round((ciderContext.sampleRate * settings.durationMs) / 1000),
+      mic: Math.round((micSampleRate * settings.durationMs) / 1000)
     };
 
     settings.onPhase?.("processing");
@@ -415,14 +873,16 @@ export async function runAutoSync(options: RunAutoSyncOptions = {}): Promise<Aut
 
     // 8. Resample mic audio to match Cider's sample rate for correlation
     // We use simple linear interpolation resampling
-    const resampledMic = resampleLinear(micSamples, micContext.sampleRate, ciderContext.sampleRate);
+    const resampledMic = resampleLinear(micSamples, micSampleRate, ciderContext.sampleRate);
     debugLog.resampledMicLength = resampledMic.length;
-    console.log(`[AutoSync] Mic audio resampled from ${micContext.sampleRate}Hz to ${ciderContext.sampleRate}Hz. Length: ${resampledMic.length}`);
+    console.log(`[AutoSync] Mic audio resampled from ${micSampleRate}Hz to ${ciderContext.sampleRate}Hz. Length: ${resampledMic.length}`);
 
     // Close mic context
-    try { await micContext.close(); } catch (e) { console.warn("[AutoSync] Error closing mic context:", e); }
-    micContext = null;
-    console.log("[AutoSync] Mic audio context closed.");
+    if (micContext) {
+      try { await micContext.close(); } catch (e) { console.warn("[AutoSync] Error closing mic context:", e); }
+      micContext = null;
+      console.log("[AutoSync] Mic audio context closed.");
+    }
 
     // 9. Analysis
     const streamRms = computeRms(streamSamples);
@@ -431,9 +891,44 @@ export async function runAutoSync(options: RunAutoSyncOptions = {}): Promise<Aut
     debugLog.rms = { stream: streamRms, mic: micRms };
     console.log(`[AutoSync] RMS - Stream: ${streamRms.toFixed(5)}, Mic: ${micRms.toFixed(5)}`);
 
+    const streamStats = computeSampleStats(streamSamples);
+    const micStats = computeSampleStats(micSamples);
+    const resampledMicStats = computeSampleStats(resampledMic);
+    debugLog.sampleStats = {
+      stream: streamStats,
+      mic: micStats,
+      resampledMic: resampledMicStats
+    };
+    console.log(`[AutoSync] Sample stats (stream) ${formatSampleStats(streamStats)}`);
+    console.log(`[AutoSync] Sample stats (mic) ${formatSampleStats(micStats)}`);
+    console.log(`[AutoSync] Sample stats (mic resampled) ${formatSampleStats(resampledMicStats)}`);
+
+    const micWorkletStats = debugLog.micWorkletStats;
+    if (micWorkletStats?.channelStats) {
+      const channelRms = micWorkletStats.channelStats.map((s: any) =>
+        typeof s.rms === "number" ? s.rms : 0
+      );
+      const channelNonZeroPct = micWorkletStats.channelStats.map((s: any) =>
+        s.sampleCount ? (s.nonZeroCount / s.sampleCount) : 0
+      );
+      debugLog.micChannelAnalysis = {
+        channelRms,
+        channelNonZeroPct,
+        channel0Silent: channelRms[0] === 0 && channelNonZeroPct[0] === 0,
+        anyOtherChannelHasSignal: channelRms.slice(1).some((r: number) => r > 0) ||
+          channelNonZeroPct.slice(1).some((p: number) => p > 0)
+      };
+      if (debugLog.micChannelAnalysis.channel0Silent && debugLog.micChannelAnalysis.anyOtherChannelHasSignal) {
+        console.warn("[AutoSync] Mic appears to have signal on a non-zero channel. Possible mono/stereo channel mismatch.");
+      }
+    }
+
     if (streamRms < settings.minRms) throw new Error(`Stream Audio too silent (RMS: ${streamRms.toFixed(5)})`);
 
     if (micRms === 0) {
+      if (settings.useCompanionMic && micCaptureSource !== "companion") {
+        throw new Error("Companion not running or mic permission blocked. Start the companion app or enable microphone access.");
+      }
       throw new Error("Microphone is capturing absolute silence (0.0). Check macOS System Settings > Privacy > Microphone.");
     }
     if (micRms < settings.minRms) {
@@ -487,6 +982,11 @@ export async function runAutoSync(options: RunAutoSyncOptions = {}): Promise<Aut
     if (micContext) {
       try { micContext.close(); } catch (e) { console.warn("[AutoSync] Final cleanup: Error closing mic context:", e); }
       console.log("[AutoSync] Final cleanup: Microphone context closed.");
+    }
+    if (companionSession?.ws) {
+      try {
+        companionSession.ws.close();
+      } catch (e) { }
     }
   }
 }

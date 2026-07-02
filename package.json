@@ -15,7 +15,7 @@
     "vue": "^3.5.13"
   },
   "devDependencies": {
-    "@ciderapp/pluginkit": "github:ciderapp/pluginkit",
+    "@ciderapp/pluginkit": "github:ciderapp/pluginkit#cider-4",
     "@types/lodash": "^4.17.6",
     "@types/musickit": "ciderapp/musickit-types",
     "@types/node": "^20.14.9",

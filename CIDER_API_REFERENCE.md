@@ -26,8 +26,8 @@ import {
   createModal,
   useCider,
   useCiderAudio,
+  AppleMusic,
   useRouter,
-  useMusicKit,
 } from "@ciderapp/pluginkit";
 ```
 
@@ -44,6 +44,16 @@ cider.app        // Vue app instance
 cider.router     // Vue router
 cider.store      // Pinia store (root)
 cider.config     // Config API ⭐ (see below)
+```
+
+### AppleMusic Controller
+
+Cider 4 deprecates `useMusicKit()` for playback control. Use the PluginKit `AppleMusic` controller instead:
+
+```typescript
+AppleMusic.playPause();
+AppleMusic.next();
+AppleMusic.previous();
 ```
 
 ### Custom Buttons

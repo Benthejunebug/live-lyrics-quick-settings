@@ -1,5 +1,6 @@
 import { ref, onMounted, onUnmounted } from 'vue';
 import type { Ref } from 'vue';
+import { isCiderLyricsTarget } from '../utils/ciderSelectors';
 
 export interface ScrollToAdjustOptions {
     enabled: Ref<boolean>;
@@ -56,6 +57,7 @@ export function useScrollToAdjust(options: ScrollToAdjustOptions) {
 
     const handleWheel = (event: WheelEvent) => {
         if (!options.enabled.value || !isModifierHeld.value) return;
+        if (!isCiderLyricsTarget(event.target)) return;
 
         // Prevent default scroll behavior when modifier is held
         event.preventDefault();

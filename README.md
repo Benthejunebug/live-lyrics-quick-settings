@@ -12,6 +12,10 @@ A Cider Music Player plugin that adds a "Quick Settings" button to the top-right
 
 Auto Sync listens to your mic for a short moment and compares it with the internal audio stream to estimate the lyrics delay. It works best with speakers (not headphones) so the mic can hear playback. You’ll be prompted for mic permission the first time, and the feature may fail if playback is too quiet or no track is playing.
 
+### Mic Companion (macOS)
+
+If the host app can’t request microphone access, use the companion app in `companion/` to provide mic audio over localhost. See `companion/README.md` for build and run instructions.
+
 ## Installation
 
 1. Build the plugin:
