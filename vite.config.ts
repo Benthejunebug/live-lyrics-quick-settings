@@ -58,7 +58,7 @@ export default defineConfig({
   },
   define: {
     'process.env': JSON.stringify({
-      cider: '2',
+      cider: '4',
     }),
     'cplugin': {
       ce_prefix: packageJson?.plugin?.ce_prefix || 'mce',

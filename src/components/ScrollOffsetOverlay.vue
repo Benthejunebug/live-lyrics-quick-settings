@@ -57,7 +57,7 @@ const formattedOffset = computed(() => {
 .offset-value {
   font-size: 18px;
   font-weight: bold;
-  color: var(--cider-accent-color, #fa586a);
+  color: var(--keyColor, var(--cider-accent-color, #fa586a));
   min-width: 60px;
   text-align: center;
 }

@@ -1,27 +1,65 @@
+/**
+ * DOM selectors used to decide whether a wheel event happened over a lyrics view.
+ *
+ * Cider 4 ("Genten") renders lyrics as plain Vue components with scoped classes --
+ * there are no `cider-*` custom elements in the client, so the selectors below are
+ * taken from the class names Cider 4 actually ships. The Cider 3 list is kept as a
+ * fallback so the plugin keeps working on older clients.
+ */
+
+/** Lyric containers and lines as rendered by Cider 4. */
 export const CIDER4_LYRIC_VIEW_SELECTORS = [
-  "cider-lyric-view",
-  "cider-lyric-line",
-  "cider-simple-lyric-view",
-  "cider-immersive-lyric-view",
+  ".lyricView",
+  ".lyric-view",
+  ".lyric-view-wrapper",
+  ".lyric-view-content",
+  ".lyric-container",
+  ".lyric-content-wrapper",
+  ".lyric-line-container",
+  ".lyric-line-item",
+  ".lyric-line",
+  ".lyric-box",
+  ".lyric-window",
+  ".simple-lyric",
+  ".single-line-lyric",
+  ".sing-focus-lyrics",
+  ".compact-lyrics",
+  ".mini-lyrics",
+  ".pvim__lyrics",
+  ".v-lyrics",
+  ".no-lyrics-container",
 ];
 
+/** Panels that can host a lyrics view. */
 export const CIDER4_DRAWER_SELECTORS = [
-  "cider-right-drawer-content",
+  ".right-drawer-content",
+  ".drawer-content",
+  ".immersive-drawer",
 ];
 
+/** Queue UI -- scrolling here must never adjust the offset. */
 export const CIDER4_QUEUE_SELECTORS = [
-  "cider-amqueue",
+  ".queue-item",
+  ".queue-header",
+  ".queue-header-row",
+  ".queue-info-bar",
+  ".queue-empty-state",
+  ".queue-control-platter",
+  ".queue-bubble-window",
+  ".queue-continuation-footer",
 ];
 
+/** Chrome/toolbar controls -- also excluded from offset adjustment. */
 export const CIDER4_CHROME_BUTTON_SELECTORS = [
-  "cider-lyrics-button",
-  "cider-queue-button",
+  ".chrome-button",
+  ".lyrics-button",
+  ".lyrics-popup-button",
+  ".queue-btn",
+  ".queue-bubble-btn",
 ];
 
 export const CIDER3_LYRIC_VIEW_SELECTORS = [
-  ".lyric-view",
   ".lyrics-view",
-  ".lyric-line",
   ".lyrics-line",
   ".lyrics-container",
   ".lyrics-content",

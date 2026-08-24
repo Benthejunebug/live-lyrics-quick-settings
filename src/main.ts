@@ -3,18 +3,22 @@ import type { App } from "vue";
 import { createPinia } from "pinia";
 import {
   definePluginContext,
-
+  addMainMenuEntry,
   addCustomButton,
+  createModal,
   useCiderAudio,
 } from "@ciderapp/pluginkit";
 import PluginConfig from "./plugin.config";
 
 import LyricsOffsetButton from "./components/LyricsOffsetButton.vue";
+import LyricsScrollHandler from "./components/LyricsScrollHandler.vue";
+import SettingsShortcutsControlCenter from "./components/SettingsShortcutsControlCenter.vue";
+import { SETTINGS_SHORTCUTS_OPEN_EVENT } from "./utils/controlCenterEvents";
 
 const AUDIO_READY_SUBSCRIPTION_KEY = "__llqs_audio_ready_subscribed__";
-const LYRICS_OFFSET_BUTTON_TRIGGER = "LIVE_LYRICS_OFFSET_TRIGGER";
-const LYRICS_OFFSET_BUTTON_ATTR = "data-live-lyrics-offset-button";
-const LYRICS_OFFSET_ICON = `
+const SETTINGS_SHORTCUTS_BUTTON_TRIGGER = "LIVE_LYRICS_OFFSET_TRIGGER";
+const SETTINGS_SHORTCUTS_BUTTON_ATTR = "data-settings-shortcuts-button";
+const SETTINGS_SHORTCUTS_ICON = `
 <svg
   aria-hidden="true"
   viewBox="0 0 24 24"
@@ -35,18 +39,22 @@ const LYRICS_OFFSET_ICON = `
 </svg>
 `;
 let buttonHydrationObserver: MutationObserver | null = null;
+let activeControlCenterModal: ReturnType<typeof createModal> | null = null;
+let controlCenterListenerRegistered = false;
+let mainMenuEntryRegistered = false;
+let scrollHandlerMounted = false;
 
-const hydrateLyricsOffsetButton = () => {
+const hydrateSettingsShortcutsButton = () => {
   const contents = new Set<HTMLElement>();
 
   for (const content of document.querySelectorAll(".chrome-button-content")) {
-    if (content instanceof HTMLElement && content.textContent?.includes(LYRICS_OFFSET_BUTTON_TRIGGER)) {
+    if (content instanceof HTMLElement && content.textContent?.includes(SETTINGS_SHORTCUTS_BUTTON_TRIGGER)) {
       contents.add(content);
     }
   }
 
   for (const content of document.querySelectorAll(
-    `button[${LYRICS_OFFSET_BUTTON_ATTR}="true"] .chrome-button-content, button[title="Lyrics Offset"] .chrome-button-content`
+    `button[${SETTINGS_SHORTCUTS_BUTTON_ATTR}="true"] .chrome-button-content, button[title="Lyric Offset"] .chrome-button-content, button[title="Lyrics Offset"] .chrome-button-content, button[title="Settings Shortcuts"] .chrome-button-content`
   )) {
     if (content instanceof HTMLElement) {
       contents.add(content);
@@ -54,34 +62,34 @@ const hydrateLyricsOffsetButton = () => {
   }
 
   for (const content of contents) {
-    const alreadyHydrated = content.querySelector(".live-lyrics-offset-button");
-    if (alreadyHydrated && !content.textContent?.includes(LYRICS_OFFSET_BUTTON_TRIGGER)) {
+    const alreadyHydrated = content.querySelector(".settings-shortcuts-button");
+    if (alreadyHydrated && !content.textContent?.includes(SETTINGS_SHORTCUTS_BUTTON_TRIGGER)) {
       continue;
     }
 
     const button = content.closest("button");
     if (button instanceof HTMLElement) {
-      button.setAttribute(LYRICS_OFFSET_BUTTON_ATTR, "true");
-      button.setAttribute("aria-label", "Lyrics Offset");
+      button.setAttribute(SETTINGS_SHORTCUTS_BUTTON_ATTR, "true");
+      button.setAttribute("aria-label", "Lyric Offset");
     }
 
     content.innerHTML = `
       <span
-        class="live-lyrics-offset-button"
+        class="settings-shortcuts-button"
         aria-hidden="true"
         style="width:100%;height:100%;display:flex;align-items:center;justify-content:center"
       >
-        ${LYRICS_OFFSET_ICON}
+        ${SETTINGS_SHORTCUTS_ICON}
       </span>
     `;
   }
 };
 
-const observeLyricsOffsetButton = () => {
-  hydrateLyricsOffsetButton();
+const observeSettingsShortcutsButton = () => {
+  hydrateSettingsShortcutsButton();
   buttonHydrationObserver?.disconnect();
   buttonHydrationObserver = new MutationObserver(() => {
-    hydrateLyricsOffsetButton();
+    hydrateSettingsShortcutsButton();
   });
   buttonHydrationObserver.observe(document.body, {
     attributes: true,
@@ -108,6 +116,14 @@ function configureApp(app: App) {
 export const CustomElements = {
 
   "lyrics-offset-button": defineCustomElement(LyricsOffsetButton, {
+    shadowRoot: false,
+    configureApp,
+  }),
+  "lyrics-scroll-handler": defineCustomElement(LyricsScrollHandler, {
+    shadowRoot: false,
+    configureApp,
+  }),
+  "settings-shortcuts-control-center": defineCustomElement(SettingsShortcutsControlCenter, {
     shadowRoot: false,
     configureApp,
   }),
@@ -142,12 +158,15 @@ const { plugin, setupConfig, customElementName, goToPage, useCPlugin } =
 
       // Here we add a custom button to the chrome
       addCustomButton({
-        element: LYRICS_OFFSET_BUTTON_TRIGGER,
+        element: SETTINGS_SHORTCUTS_BUTTON_TRIGGER,
         location: cfg.value.general.buttonLocation,
-        title: "Lyrics Offset",
+        title: "Lyric Offset",
         menuElement: customElementName("lyrics-offset-button"),
       });
-      observeLyricsOffsetButton();
+      observeSettingsShortcutsButton();
+      observeControlCenterRequests();
+      safelyRegisterMainMenuEntry();
+      safelyMountScrollHandler();
 
       const audio = useCiderAudio();
       const audioFlags = audio as unknown as Record<string, boolean> | null;
@@ -161,6 +180,81 @@ const { plugin, setupConfig, customElementName, goToPage, useCPlugin } =
 
     },
   });
+
+const openSettingsShortcutsControlCenter = () => {
+  if (activeControlCenterModal?.dialogElement.isConnected) {
+    activeControlCenterModal.dialogElement.focus();
+    return;
+  }
+
+  const element = document.createElement(customElementName("settings-shortcuts-control-center"));
+  let modal: ReturnType<typeof createModal> | null = null;
+
+  const closeModal = () => {
+    modal?.closeDialog();
+  };
+
+  element.addEventListener("close", closeModal);
+
+  modal = createModal({
+    escClose: true,
+    className: ["settings-shortcuts-modal"],
+    element,
+  });
+
+  modal.dialogElement.addEventListener(
+    "close",
+    () => {
+      element.removeEventListener("close", closeModal);
+      if (activeControlCenterModal === modal) {
+        activeControlCenterModal = null;
+      }
+    },
+    { once: true }
+  );
+
+  activeControlCenterModal = modal;
+  modal.openDialog();
+};
+
+const observeControlCenterRequests = () => {
+  if (controlCenterListenerRegistered) return;
+  controlCenterListenerRegistered = true;
+  window.addEventListener(SETTINGS_SHORTCUTS_OPEN_EVENT, openSettingsShortcutsControlCenter);
+};
+
+const safelyRegisterMainMenuEntry = () => {
+  if (mainMenuEntryRegistered) return;
+  mainMenuEntryRegistered = true;
+
+  try {
+    addMainMenuEntry({
+      label: "Settings Shortcuts",
+      onClick: openSettingsShortcutsControlCenter,
+    });
+  } catch (error) {
+    console.warn("[SettingsShortcuts] Unable to register main menu entry:", error);
+  }
+};
+
+const safelyMountScrollHandler = () => {
+  if (scrollHandlerMounted) return;
+
+  try {
+    const elementName = customElementName("lyrics-scroll-handler");
+    if (document.querySelector(elementName)) {
+      scrollHandlerMounted = true;
+      return;
+    }
+
+    const element = document.createElement(elementName);
+    element.setAttribute("aria-hidden", "true");
+    document.body.appendChild(element);
+    scrollHandlerMounted = true;
+  } catch (error) {
+    console.warn("[SettingsShortcuts] Unable to mount scroll handler:", error);
+  }
+};
 
 /**
  * Some boilerplate code for our own configuration

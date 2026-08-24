@@ -1,4 +1,4 @@
-import { useCiderAudio } from "@ciderapp/pluginkit";
+import { useCider, useCiderAudio } from "@ciderapp/pluginkit";
 
 export type AutoSyncPhase = "listening" | "processing";
 
@@ -37,6 +37,85 @@ const DEFAULTS = {
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+
+/**
+ * Cider 4 ("Genten") plays through MKLite and only builds a WebAudio graph for some
+ * output modes. When Cider Audio is disabled, or when the output device resolves to
+ * Atmos *passthrough*, `CiderAudio.init()` returns immediately and no AudioContext or
+ * tappable node is ever created -- Auto Sync cannot work at all in that state.
+ *
+ * This mirrors the check Cider itself performs so we can fail fast with an actionable
+ * message instead of waiting out the ready timeout.
+ */
+const describeCiderAudioAvailability = (): { available: boolean; reason?: string; mode?: string } => {
+  let getValue: ((path: string) => any) | undefined;
+  try {
+    getValue = useCider()?.config?.getValue?.bind(useCider().config);
+  } catch {
+    // Older clients, or config API unavailable -- assume the graph is usable.
+  }
+  if (typeof getValue !== "function") return { available: true };
+
+  try {
+    if (getValue("audio.ciderAudio.enabled") === false) {
+      return {
+        available: false,
+        reason: "Cider Audio is turned off. Enable it in Settings > Audio to use Auto Sync.",
+      };
+    }
+
+    const device = getValue("audio.deviceOutput") || "default";
+    const preferences = getValue("audio.atmos.devicePreferences");
+    const atmosEnabled = getValue("audio.atmos.enabled");
+    const binaural = getValue("audio.atmos.binaural");
+
+    const mode =
+      (preferences && preferences[device]) ||
+      (atmosEnabled === false ? "off" : binaural ? "binaural" : "passthrough");
+
+    if (mode === "passthrough") {
+      return {
+        available: false,
+        mode,
+        reason:
+          "Cider is in Atmos passthrough mode, so playback bypasses the WebAudio graph " +
+          "that Auto Sync listens to. Switch Settings > Audio > Atmos to binaural (or off) and retry.",
+      };
+    }
+
+    return { available: true, mode };
+  } catch {
+    return { available: true };
+  }
+};
+
+/** Cider 4 exposes the shared graph context on `window.ciderAudioContext`. */
+const getSharedAudioContext = (audio: any): AudioContext | null => {
+  const shared = (window as any).ciderAudioContext;
+  return (audio?.context as AudioContext) || (shared instanceof AudioContext ? shared : null);
+};
+
+/** `CiderAudio.init()` is callback-based, not promise-based. Wrap it so we can await it. */
+const initCiderAudio = (audio: any, timeoutMs: number) =>
+  new Promise<void>((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    const timer = setTimeout(done, timeoutMs);
+    try {
+      audio.init(() => {
+        clearTimeout(timer);
+        done();
+      });
+    } catch (error) {
+      clearTimeout(timer);
+      console.warn("[AutoSync] Error calling Cider audio.init():", error);
+      done();
+    }
+  });
 
 // Inline AudioWorkletProcessor code to avoid file loading issues in plugins
 const PROCESSOR_CODE = `
@@ -656,28 +735,34 @@ export async function runAutoSync(options: RunAutoSyncOptions = {}): Promise<Aut
     }
 
     // 3. Ensure Cider Audio Context is Ready
-    if (!audio.context && typeof audio.init === "function") {
-      try {
-        debugLog.callingInit = true;
-        console.log("[AutoSync] Calling Cider audio.init()...");
-        await audio.init();
-      } catch (e: any) {
-        debugLog.initError = e?.message || String(e);
-        console.warn("[AutoSync] Error calling Cider audio.init():", e);
-      }
+    //    On Cider 4 the WebAudio graph is skipped entirely in some output modes, so
+    //    check for that first rather than waiting out the ready timeout.
+    const availability = describeCiderAudioAvailability();
+    debugLog.ciderAudioAvailability = availability;
+    if (!availability.available && !getSharedAudioContext(audio)) {
+      throw new Error(availability.reason || "Cider Audio graph is unavailable.");
+    }
+
+    if (!getSharedAudioContext(audio) && typeof audio.init === "function") {
+      debugLog.callingInit = true;
+      console.log("[AutoSync] Calling Cider audio.init()...");
+      await initCiderAudio(audio, settings.readyTimeoutMs);
     }
 
     debugLog.audioKeys = Object.keys(audio);
 
     const waitStart = now();
-    while (!audio.context) {
+    while (!getSharedAudioContext(audio)) {
       if (now() - waitStart > settings.readyTimeoutMs) {
-        throw new Error(`Cider Audio Context timed out after ${settings.readyTimeoutMs}ms. Is music playing?`);
+        throw new Error(
+          availability.reason ||
+            `Cider Audio Context timed out after ${settings.readyTimeoutMs}ms. Is music playing?`
+        );
       }
       await delay(100);
     }
 
-    const ciderContext = audio.context as AudioContext;
+    const ciderContext = getSharedAudioContext(audio) as AudioContext;
     debugLog.ciderContextState = ciderContext.state;
     debugLog.ciderSampleRate = ciderContext.sampleRate;
     console.log("[AutoSync] Cider audio context is ready.");
@@ -693,9 +778,15 @@ export async function runAutoSync(options: RunAutoSyncOptions = {}): Promise<Aut
     }
 
     // 4. Identify Stream Source (Tap Node)
-    const tapNode = audio.source || audio.audioNodes?.gainNode;
+    // Cider 4 sets `source` to the MKLite middleware node; older builds only expose gainNode.
+    const tapNode = audio.source || audio.audioNodes?.gainNode || audio.audioNodes?.airplaygainNode;
     debugLog.hasTapNode = !!tapNode;
-    if (!tapNode) throw new Error("Could not find Cider audio source node to tap");
+    if (!tapNode) {
+      throw new Error(
+        availability.reason ||
+          "Could not find a Cider audio node to tap. Start playback and make sure Cider Audio is enabled."
+      );
+    }
     console.log("[AutoSync] Cider audio source node identified.");
 
     // 5. Prepare mic capture (companion or browser)

@@ -12,8 +12,8 @@ import { execSync } from 'child_process';
         throw new Error(`Invalid identifier: ${identifier}`);
     }
 
-    // run npm run build
-    execSync('npm run build');
+    // Use the packageManager-pinned pnpm version for reproducible release builds.
+    execSync('corepack pnpm build', { stdio: 'inherit' });
 
     // The file that will be sent to the marketplace
     const publishDir = path.resolve(process.cwd(), 'publish');

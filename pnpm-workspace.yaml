@@ -1,0 +1,2 @@
+allowBuilds:
+  "@ciderapp/pluginkit@https://codeload.github.com/ciderapp/pluginkit/tar.gz/e7bcba04aeb342470df740878857e4d1805cb48b": true
